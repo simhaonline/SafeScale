@@ -23,6 +23,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
+
 	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 
 	uuid "github.com/satori/go.uuid"
@@ -54,11 +56,16 @@ type TaskResult interface{}
 // TaskAction ...
 type TaskAction func(t Task, parameters TaskParameters) (TaskResult, error)
 
-// FIXME Unit test this class
+// TaskGuard ...
+type TaskGuard interface {
+	TryWait() (bool, TaskResult, error)
+	Wait() (TaskResult, error)
+	WaitFor(time.Duration) (bool, TaskResult, error)
+}
 
-// Task ...
-type Task interface {
-	Abort()
+// TaskCore is the interface of core methods to control task and taskgroup
+type TaskCore interface {
+	Abort() error
 	Aborted() bool
 	ForceID(string) (Task, error)
 	GetID() (string, error)
@@ -75,12 +82,15 @@ type Task interface {
 	Run(TaskAction, TaskParameters) (TaskResult, error)
 	Start(TaskAction, TaskParameters) (Task, error)
 	StartWithTimeout(TaskAction, TaskParameters, time.Duration) (Task, error)
-	// StoreResult(TaskParameters)
-	TryWait() (bool, TaskResult, error)
-	Wait() (TaskResult, error)
 }
 
-// task is a structure allowing to identify (indirectly) goroutines
+// Task is the interface of a task running in goroutine, allowing to identity (indirectly) goroutines
+type Task interface {
+	TaskCore
+	TaskGuard
+}
+
+// task is the implementation of Task
 type task struct {
 	lock   sync.Mutex
 	id     string
@@ -91,7 +101,7 @@ type task struct {
 
 	finishCh chan struct{} // Used to signal the routine that Wait() the go routine is done
 	doneCh   chan bool     // Used by routine to signal it has done its processing
-	abortCh  chan bool
+	abortCh  chan struct{}
 
 	err    error
 	result TaskResult
@@ -157,13 +167,10 @@ func newTask(ctx context.Context, parentTask Task) (*task, error) {
 		cancel:     cancel,
 		status:     READY,
 		generation: generation,
-		abortCh:    make(chan bool, 1),
-		doneCh:     make(chan bool, 1),
-		finishCh:   make(chan struct{}, 1),
+		// abortCh:    make(chan bool, 1),
+		// doneCh:     make(chan bool, 1),
+		// finishCh:   make(chan struct{}, 1),
 	}
-	close(t.abortCh)
-	close(t.doneCh)
-	close(t.finishCh)
 
 	tid, _ := t.GetID() // FIXME Later
 	t.sig = fmt.Sprintf("{task %s}", tid)
@@ -228,7 +235,7 @@ func (t *task) Start(action TaskAction, params TaskParameters) (Task, error) {
 // If timeout happens, error returned will be ErrTimeout
 // This function is useful when you know at the time you use it there will be a timeout to apply.
 func (t *task) StartWithTimeout(action TaskAction, params TaskParameters, timeout time.Duration) (Task, error) {
-	tid, _ := t.GetID() // FIXME Later
+	tid, _ := t.GetID() // FIXME: Later
 
 	if t.GetStatus() != READY {
 		return nil, fmt.Errorf("cannot start task '%s': not ready", tid)
@@ -242,7 +249,7 @@ func (t *task) StartWithTimeout(action TaskAction, params TaskParameters, timeou
 	} else {
 		t.status = RUNNING
 		t.doneCh = make(chan bool, 1)
-		t.abortCh = make(chan bool, 1)
+		t.abortCh = make(chan struct{}, 1)
 		t.finishCh = make(chan struct{}, 1)
 		go t.controller(action, params, timeout)
 	}
@@ -253,8 +260,9 @@ func (t *task) StartWithTimeout(action TaskAction, params TaskParameters, timeou
 func (t *task) controller(action TaskAction, params TaskParameters, timeout time.Duration) {
 	go t.run(action, params)
 
-	// tracer := NewTracer(true, t, "")
+	// tracer := NewTracer(t, "", true)
 	finish := false
+	begin := time.Now()
 
 	if timeout > 0 {
 		for !finish {
@@ -262,7 +270,11 @@ func (t *task) controller(action TaskAction, params TaskParameters, timeout time
 			case <-t.ctx.Done():
 				// Context cancel signal received, propagating using abort signal
 				// tracer.Trace("receiving signal from context, aborting task...")
-				t.abortCh <- true
+				t.lock.Lock()
+				if t.status == RUNNING && t.abortCh != nil {
+					t.abortCh <- struct{}{}
+				}
+				t.lock.Unlock()
 			case <-t.doneCh:
 				// When action is done, "rearms" the done channel to allow Wait()/TryWait() to read from it
 				// tracer.Trace("receiving done signal from go routine")
@@ -272,18 +284,24 @@ func (t *task) controller(action TaskAction, params TaskParameters, timeout time
 				finish = true
 			case <-t.abortCh:
 				// Abort signal received
-				// tracer.Trace("receiving abort signal")
 				t.lock.Lock()
-				t.status = ABORTED
-				t.err = scerr.AbortedError("", nil)
+				close(t.abortCh)
+				t.abortCh = nil
+				if t.status != TIMEOUT {
+					t.status = ABORTED
+					t.err = scerr.AbortedError("", nil)
+				}
 				t.lock.Unlock()
 				finish = true
 			case <-time.After(timeout):
 				t.lock.Lock()
+				st := t.status
 				t.status = TIMEOUT
-				t.err = scerr.TimeoutError("task is out of time", timeout, nil)
+				t.err = scerr.TimeoutError(fmt.Sprintf("task is out of time ( %s > %s)", temporal.FormatDuration(time.Since(begin)), temporal.FormatDuration(timeout)), timeout, nil)
+				if st == RUNNING && t.abortCh != nil {
+					t.abortCh <- struct{}{}
+				}
 				t.lock.Unlock()
-				finish = true
 			}
 		}
 	} else {
@@ -292,10 +310,12 @@ func (t *task) controller(action TaskAction, params TaskParameters, timeout time
 			case <-t.ctx.Done():
 				// Context cancel signal received, propagating using abort signal
 				// tracer.Trace("receiving signal from context, aborting task...")
-				t.abortCh <- true
+				t.lock.Lock()
+				if t.status == RUNNING && t.abortCh != nil {
+					t.abortCh <- struct{}{}
+				}
+				t.lock.Unlock()
 			case <-t.doneCh:
-				// When action is done, "rearms" the done channel to allow Wait()/TryWait() to read from it
-				// tracer.Trace("receiving done signal from go routine")
 				t.lock.Lock()
 				t.status = DONE
 				t.lock.Unlock()
@@ -304,15 +324,22 @@ func (t *task) controller(action TaskAction, params TaskParameters, timeout time
 				// Abort signal received
 				// tracer.Trace("receiving abort signal")
 				t.lock.Lock()
-				t.status = ABORTED
-				t.err = scerr.AbortedError("", nil)
+				close(t.abortCh)
+				t.abortCh = nil
+				if t.status != TIMEOUT {
+					t.status = ABORTED
+					t.err = scerr.AbortedError("", nil)
+				}
 				t.lock.Unlock()
 				finish = true
 			}
 		}
 	}
 
+	t.lock.Lock()
 	t.finishCh <- struct{}{}
+	close(t.finishCh)
+	t.lock.Unlock()
 }
 
 // run executes the function 'action'
@@ -325,16 +352,16 @@ func (t *task) run(action TaskAction, params TaskParameters) {
 	t.err = err
 	t.result = result
 	t.doneCh <- true
+	close(t.doneCh)
 }
 
 // Run starts task, waits its completion then return the error code
 func (t *task) Run(action TaskAction, params TaskParameters) (TaskResult, error) {
-	stask, err := t.Start(action, params)
+	_, err := t.Start(action, params)
 	if err != nil {
 		return nil, err
 	}
-
-	return stask.Wait()
+	return t.Wait()
 }
 
 // Wait waits for the task to end, and returns the error (or nil) of the execution
@@ -355,10 +382,6 @@ func (t *task) Wait() (TaskResult, error) {
 
 	t.lock.Lock()
 	defer t.lock.Unlock()
-
-	close(t.finishCh)
-	close(t.abortCh)
-	close(t.doneCh)
 	return t.result, t.err
 }
 
@@ -454,26 +477,28 @@ func (t *task) WaitFor(duration time.Duration) (bool, TaskResult, error) {
 // }
 
 // Abort aborts the task execution
-func (t *task) Abort() {
+func (t *task) Abort() error {
+	if t == nil {
+		return scerr.InvalidInstanceError()
+	}
+
 	status := t.GetStatus()
 	if status == RUNNING {
 		t.lock.Lock()
 		defer t.lock.Unlock()
 
-		// Tell controller to stop go routine
-		//		t.abortCh <- true
-
 		// Tell context to cancel
-		// VPL: normally this should trigger abort in controller...
 		t.cancel()
 
 		t.status = ABORTED
 	}
+	return nil
 }
 
 // Aborted tells if task has been aborted
 func (t *task) Aborted() bool {
-	return t.GetStatus() == ABORTED
+	st := t.GetStatus()
+	return st == ABORTED || st == TIMEOUT
 }
 
 // StoreResult stores the result of the run

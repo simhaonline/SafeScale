@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-import "github.com/golang/protobuf/ptypes/empty/empty.proto";
+import "google/protobuf/empty.proto";
 
 message Tenant{
     string name = 1;
@@ -15,9 +15,9 @@ service TenantService{
     rpc List (google.protobuf.Empty) returns (TenantList){}
     rpc Set (TenantName) returns (google.protobuf.Empty){}
     rpc Get (google.protobuf.Empty) returns (TenantName){}
-    rpc StorageList (google.protobuf.Empty) returns (TenantList){}
-    rpc StorageSet (TenantNameList) returns (google.protobuf.Empty){}
-    rpc StorageGet (google.protobuf.Empty) returns (TenantNameList){}
+//     rpc StorageList (google.protobuf.Empty) returns (TenantList){}
+//     rpc StorageSet (TenantNameList) returns (google.protobuf.Empty){}
+//     rpc StorageGet (google.protobuf.Empty) returns (TenantNameList){}
 }
 
 message Image{
@@ -128,6 +128,7 @@ service NetworkService{
     rpc List(NetworkListRequest) returns (NetworkList){}
     rpc Inspect(Reference) returns (Network) {}
     rpc Delete(Reference) returns (google.protobuf.Empty){}
+    rpc Destroy(Reference) returns (google.protobuf.Empty){}
 }
 
 // safescale host create host1 --net="net1" --cpu=2 --ram=7 --disk=100 --os="Ubuntu 16.04" --public=true
@@ -170,8 +171,12 @@ enum HostState {
 	/*STOPPING host is stopping*/
 	STOPPING = 3;
 	/*ERROR host is in error state*/
-	ERROR = 4;
-  }
+    ERROR = 4;
+    /*TERMINATED host is terminated (in AWS, it's like DELETED)*/
+    TERMINATED = 5;
+    /*UNKNOWN is unknown*/
+    UNKNOWN = 255;
+}
 
 message Host{
     string id = 1;
@@ -344,6 +349,7 @@ service BucketService{
     rpc Mount(BucketMountingPoint) returns (google.protobuf.Empty){}
     rpc Unmount(BucketMountingPoint) returns (google.protobuf.Empty){}
     rpc Delete(Bucket) returns (google.protobuf.Empty){}
+    rpc Destroy(Bucket) returns (google.protobuf.Empty){}
     rpc List(google.protobuf.Empty) returns (BucketList){}
     rpc Inspect(Bucket) returns (BucketMountingPoint){}
 }

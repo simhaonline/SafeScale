@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/hoststate"
+
 	// "github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/NetworkState"
 
 	"github.com/sirupsen/logrus"
@@ -38,6 +40,7 @@ import (
 	"github.com/CS-SI/SafeScale/lib/server/metadata"
 	safescaleutils "github.com/CS-SI/SafeScale/lib/server/utils"
 	"github.com/CS-SI/SafeScale/lib/utils"
+	"github.com/CS-SI/SafeScale/lib/utils/cli/enums/outputs"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 	"github.com/CS-SI/SafeScale/lib/utils/data"
 	"github.com/CS-SI/SafeScale/lib/utils/retry"
@@ -55,6 +58,7 @@ type NetworkAPI interface {
 	List(context.Context, bool) ([]*resources.Network, error)
 	Inspect(context.Context, string) (*resources.Network, error)
 	Delete(context.Context, string) error
+	Destroy(context.Context, string) error
 }
 
 // NetworkHandler an implementation of NetworkAPI
@@ -667,7 +671,7 @@ func (handler *NetworkHandler) installPhase2OnGateway(task concurrency.Task, par
 	sshHandler := NewSSHHandler(handler.service)
 
 	// logrus.Debugf("Configuring gateway '%s', phase 2", gw.Name)
-	returnCode, _, _, err := sshHandler.Run(task.GetContext(), gw.Name, command)
+	returnCode, _, _, err := sshHandler.Run(task.GetContext(), gw.Name, command, outputs.COLLECT)
 	if err != nil {
 		retrieveForensicsData(task.GetContext(), sshHandler, gw)
 
@@ -680,12 +684,16 @@ func (handler *NetworkHandler) installPhase2OnGateway(task concurrency.Task, par
 
 		return nil, fmt.Errorf("failed to finalize gateway '%s' installation: errorcode '%d', warnings '%s', errors '%s'", gw.Name, returnCode, warnings, errs)
 	}
+
+	// FIXME: AWS Retrieve data anyway
+	retrieveForensicsData(task.GetContext(), sshHandler, gw)
+
 	logrus.Infof("Gateway '%s' successfully configured.", gw.Name)
 
 	// Reboot gateway
 	logrus.Debugf("Rebooting gateway '%s'", gw.Name)
 	command = "sudo systemctl reboot"
-	returnCode, _, _, err = sshHandler.Run(task.GetContext(), gw.Name, command)
+	returnCode, _, _, err = sshHandler.Run(task.GetContext(), gw.Name, command, outputs.COLLECT)
 	if err != nil {
 		return nil, err
 	}
@@ -834,11 +842,12 @@ func (handler *NetworkHandler) Delete(ctx context.Context, ref string) (err erro
 		if hostsLen > 0 {
 			list := make([]string, 0, hostsLen)
 			for k := range networkHostsV1.ByName {
-				_, err = handler.service.GetHostByName(k)
+				rechost, err := handler.service.GetHostByName(k)
 				if err == nil {
-					list = append(list, k)
+					if rechost.LastState != hoststate.TERMINATED {
+						list = append(list, k)
+					}
 				}
-
 			}
 			if len(list) == 0 {
 				return nil
@@ -1001,39 +1010,176 @@ func (handler *NetworkHandler) Delete(ctx context.Context, ref string) (err erro
 		}
 	}
 
-	// select {
-	// case <-ctx.Done():
-	// 	logrus.Warnf("Network delete cancelled by user")
-	// 	hostSizingV1 := propsv1.NewHostSizing()
-	// 	err := metadataHost.Properties.LockForRead(hostproperty.SizingV1).ThenUse(func(clonable data.Clonable) error {
-	// 		hostSizingV1 = v.(*propsv1.HostSizing)
-	// 		return nil
-	// 	})
-	// 	if err != nil {
-	// 		return fmt.Errorf("failed to get gateway sizingV1")
-	// 	}
+	return nil
+}
 
-	// 	//os name of the gw is not stored in metadatas so we used ubuntu 16.04 by default
-	// 	sizing := resources.SizingRequirements{
-	// 		MinCores:    hostSizingV1.AllocatedSize.Cores,
-	// 		MaxCores:    hostSizingV1.AllocatedSize.Cores,
-	// 		MinFreq:     hostSizingV1.AllocatedSize.CPUFreq,
-	// 		MinGPU:      hostSizingV1.AllocatedSize.GPUNumber,
-	// 		MinRAMSize:  hostSizingV1.AllocatedSize.RAMSize,
-	// 		MaxRAMSize:  hostSizingV1.AllocatedSize.RAMSize,
-	// 		MinDiskSize: hostSizingV1.AllocatedSize.DiskSize,
-	// 	}
-	// 	networkBis, err := handler.Create(context.Background(), network.Name, network.CIDR, network.IPVersion, sizing, "Ubuntu 18.04", metadataHost.Name)
-	// 	if err != nil {
-	// 		return fmt.Errorf("failed to stop network deletion")
-	// 	}
-	// 	buf, err := networkBis.Serialize()
-	// 	if err != nil {
-	// 		return fmt.Errorf("Deleted Network recreated by safescale")
-	// 	}
-	// 	return fmt.Errorf("Deleted Network recreated by safescale : %s", buf)
-	// default:
-	// }
+// Destroy destroys network referenced by ref
+func (handler *NetworkHandler) Destroy(ctx context.Context, ref string) (err error) {
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", ref), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	mn, err := metadata.LoadNetwork(handler.service, ref)
+	if err != nil {
+		if _, ok := err.(scerr.ErrNotFound); !ok {
+			cleanErr := handler.service.DeleteNetwork(ref)
+			if cleanErr != nil {
+				switch cleanErr.(type) {
+				case scerr.ErrNotFound, scerr.ErrTimeout:
+					logrus.Warnf("error deleting network on cleanup after failure to load metadata '%s': %v", ref, cleanErr)
+				default:
+					logrus.Warnf("error deleting network on cleanup after failure to load metadata '%s': %v", ref, cleanErr)
+				}
+			}
+			err = scerr.AddConsequence(err, cleanErr)
+		}
+		return err
+	}
+	network, err := mn.Get()
+	if err != nil {
+		return err
+	}
+
+	// Delete gateway(s)
+	if network.GatewayID != "" {
+		mh, err := metadata.LoadHost(handler.service, network.GatewayID)
+		if err != nil {
+			logrus.Error(err)
+		} else {
+			if network.VIP != nil {
+				mhm, merr := mh.Get()
+				if merr != nil {
+					return merr
+				}
+				err = handler.service.UnbindHostFromVIP(network.VIP, mhm.ID)
+				if err != nil {
+					logrus.Errorf("failed to unbind primary gateway from VIP: %v", err)
+				}
+			}
+
+			err = handler.service.DeleteGateway(network.GatewayID) // allow no gateway, but log it
+			if err != nil {
+				switch err.(type) {
+				case scerr.ErrNotFound:
+					logrus.Errorf("failed to delete primary gateway, resource not found: %s", openstack.ProviderErrorToString(err))
+				case scerr.ErrTimeout:
+					logrus.Errorf("failed to delete primary gateway, timeout: %s", openstack.ProviderErrorToString(err))
+				default:
+					logrus.Errorf("failed to delete primary gateway: %s", openstack.ProviderErrorToString(err))
+				}
+			}
+
+			err = mh.Delete()
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if network.SecondaryGatewayID != "" {
+		mh, err := metadata.LoadHost(handler.service, network.SecondaryGatewayID)
+		if err != nil {
+			logrus.Error(err)
+		} else {
+			if network.VIP != nil {
+				err = handler.service.UnbindHostFromVIP(network.VIP, network.SecondaryGatewayID)
+				if err != nil {
+					logrus.Errorf("failed to unbind secondary gateway from VIP: %v", err)
+				}
+			}
+
+			err = handler.service.DeleteGateway(network.SecondaryGatewayID) // allow no gateway, but log it
+			if err != nil {
+				switch err.(type) {
+				case scerr.ErrNotFound:
+					logrus.Errorf("failed to delete secondary gateway, resource not found: %s", openstack.ProviderErrorToString(err))
+				case scerr.ErrTimeout:
+					logrus.Errorf("failed to delete secondary gateway, timeout: %s", openstack.ProviderErrorToString(err))
+				default:
+					logrus.Errorf("failed to delete secondary gateway: %s", openstack.ProviderErrorToString(err))
+				}
+			}
+
+			err = mh.Delete()
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// Delete VIP if needed
+	if network.VIP != nil {
+		err = handler.service.DeleteVIP(network.VIP)
+		if err != nil {
+			logrus.Errorf("failed to delete VIP: %v", err)
+		}
+	}
+
+	defer func() {
+		if err != nil {
+			// Delete metadata if there
+			mnm, nerr := mn.Get()
+			if nerr != nil {
+				err = scerr.AddConsequence(err, nerr)
+			}
+			if nerr == nil {
+				if mnm != nil {
+					derr := mn.Delete()
+					if derr != nil {
+						err = scerr.AddConsequence(err, derr)
+					}
+				}
+			}
+		}
+	}()
+
+	waitMore := false
+	// delete network, with tolerance
+	err = handler.service.DeleteNetwork(network.ID)
+	if err != nil {
+		switch err.(type) {
+		case scerr.ErrNotFound:
+			// If network doesn't exist anymore on the provider infrastructure, don't fail to cleanup the metadata
+			logrus.Warnf("network not found on provider side, cleaning up metadata.")
+			return err
+		case scerr.ErrTimeout:
+			logrus.Error("cannot delete network due to a timeout")
+			waitMore = true
+		default:
+			logrus.Error("cannot delete network, other reason")
+		}
+	}
+	if waitMore {
+		errWaitMore := retry.WhileUnsuccessfulDelay1Second(func() error {
+			recNet, recErr := handler.service.GetNetwork(network.ID)
+			if recNet != nil {
+				return fmt.Errorf("still there")
+			}
+			if _, ok := recErr.(scerr.ErrNotFound); ok {
+				return nil
+			}
+			return fmt.Errorf("another kind of error")
+		}, temporal.GetContextTimeout())
+		if errWaitMore != nil {
+			err = scerr.AddConsequence(err, errWaitMore)
+		}
+	}
+
+	if err != nil {
+		return err
+	}
+
+	// Delete network metadata if there
+	mnm, err := mn.Get()
+	if err != nil {
+		return err
+	}
+
+	if mnm != nil {
+		err = mn.Delete()
+		if err != nil {
+			return err
+		}
+	}
 
 	return nil
 }

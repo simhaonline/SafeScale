@@ -39,7 +39,7 @@ feature:
                             masters: all
                         run: |
                             if ! docker image ls {{ "--format '{{.Repository}}:{{.Tag}}'" }} | grep 'safescale/remotedesktop:latest' &>/dev/null; then
-                                sfFail 1
+                                sfFail 1 "Docker image safescale/remotedesktop:latest not found"
                             fi
                             sfExit
 
@@ -289,7 +289,7 @@ feature:
                         targets:
                             hosts: yes
                             masters: all
-                        timeout: 10
+                        timeout: 20
                         run: |
                             cat >${SF_ETCDIR}/remotedesktop/build/supervisord.conf <<-'EOF'
                             [supervisord]

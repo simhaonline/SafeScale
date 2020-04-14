@@ -17,10 +17,6 @@
 package openstack
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"strings"
 	"time"
@@ -28,7 +24,6 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	uuid "github.com/satori/go.uuid"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/crypto/ssh"
 
 	gc "github.com/gophercloud/gophercloud"
 	az "github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/availabilityzones"
@@ -50,6 +45,7 @@ import (
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/userdata"
 	"github.com/CS-SI/SafeScale/lib/utils"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
+	"github.com/CS-SI/SafeScale/lib/utils/crypt"
 	"github.com/CS-SI/SafeScale/lib/utils/data"
 	"github.com/CS-SI/SafeScale/lib/utils/retry"
 	"github.com/CS-SI/SafeScale/lib/utils/scerr"
@@ -259,7 +255,7 @@ func (s *Stack) ListTemplates() ([]resources.HostTemplate, error) {
 			return nil, err
 		default:
 			spew.Dump(pager.Err)
-			return nil, scerr.Wrap(err, fmt.Sprintf("error listing templates"))
+			return nil, scerr.Wrap(err, "error listing templates")
 		}
 	}
 	if len(flvList) == 0 {
@@ -268,7 +264,7 @@ func (s *Stack) ListTemplates() ([]resources.HostTemplate, error) {
 	return flvList, nil
 }
 
-// CreateKeyPair creates and import a key pair
+// CreateKeyPair creates a key pair (no import)
 func (s *Stack) CreateKeyPair(name string) (*resources.KeyPair, error) {
 	if s == nil {
 		return nil, scerr.InvalidInstanceError()
@@ -280,26 +276,27 @@ func (s *Stack) CreateKeyPair(name string) (*resources.KeyPair, error) {
 	tracer := concurrency.NewTracer(nil, fmt.Sprintf("(%s)", name), true).WithStopwatch().GoingIn()
 	defer tracer.OnExitTrace()()
 
-	privateKey, _ := rsa.GenerateKey(rand.Reader, 2048)
-	publicKey := privateKey.PublicKey
-	pub, _ := ssh.NewPublicKey(&publicKey)
-	pubBytes := ssh.MarshalAuthorizedKey(pub)
-	pubKey := string(pubBytes)
+	// privateKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	// publicKey := privateKey.PublicKey
+	// pub, _ := ssh.NewPublicKey(&publicKey)
+	// pubBytes := ssh.MarshalAuthorizedKey(pub)
+	// pubKey := string(pubBytes)
 
-	priBytes := x509.MarshalPKCS1PrivateKey(privateKey)
-	priKeyPem := pem.EncodeToMemory(
-		&pem.Block{
-			Type:  "RSA PRIVATE KEY",
-			Bytes: priBytes,
-		},
-	)
-	priKey := string(priKeyPem)
-	return &resources.KeyPair{
-		ID:         name,
-		Name:       name,
-		PublicKey:  pubKey,
-		PrivateKey: priKey,
-	}, nil
+	// priBytes := x509.MarshalPKCS1PrivateKey(privateKey)
+	// priKeyPem := pem.EncodeToMemory(
+	// 	&pem.Block{
+	// 		Type:  "RSA PRIVATE KEY",
+	// 		Bytes: priBytes,
+	// 	},
+	// )
+	// priKey := string(priKeyPem)
+	// return &resources.KeyPair{
+	// 	ID:         name,
+	// 	Name:       name,
+	// 	PublicKey:  pubKey,
+	// 	PrivateKey: priKey,
+	// }, nil
+	return crypt.GenerateRSAKeyPair(name)
 }
 
 // GetKeyPair returns the key pair identified by id
@@ -316,7 +313,7 @@ func (s *Stack) GetKeyPair(id string) (*resources.KeyPair, error) {
 
 	kp, err := keypairs.Get(s.ComputeClient, id).Extract()
 	if err != nil {
-		return nil, scerr.Wrap(err, fmt.Sprintf("error getting keypair"))
+		return nil, scerr.Wrap(err, "error getting keypair")
 	}
 	return &resources.KeyPair{
 		ID:         kp.Name,
@@ -359,7 +356,7 @@ func (s *Stack) ListKeyPairs() ([]resources.KeyPair, error) {
 	})
 	if (len(kpList) == 0) || (err != nil) {
 		if err != nil {
-			return nil, scerr.Wrap(err, fmt.Sprintf("error listing keypairs"))
+			return nil, scerr.Wrap(err, "error listing keypairs")
 		}
 	}
 	return kpList, nil
@@ -450,6 +447,7 @@ func (s *Stack) InspectHost(hostParam interface{}) (host *resources.Host, err er
 	if err != nil {
 		return nil, err
 	}
+
 	err = s.complementHost(host, server)
 	if err != nil {
 		return nil, err
@@ -462,64 +460,10 @@ func (s *Stack) InspectHost(hostParam interface{}) (host *resources.Host, err er
 	return host, nil
 }
 
-func (s *Stack) queryServer(id string) (*servers.Server, error) {
-	var (
-		server   *servers.Server
-		err      error
-		notFound bool
-	)
-
-	timeout := 2 * temporal.GetBigDelay()
-	retryErr := retry.WhileUnsuccessful(
-		func() error {
-			server, err = servers.Get(s.ComputeClient, id).Extract()
-			if err != nil {
-				switch err.(type) {
-				case gc.ErrDefault404:
-					// If error is "resource not found", we want to return GopherCloud error as-is to be able
-					// to behave differently in this special case. To do so, stop the retry
-					notFound = true
-					return nil
-				case gc.ErrDefault500:
-					// When the response is "Internal Server Error", retries
-					logrus.Warnf("received 'Internal Server Error', retrying servers.Get...")
-					return err
-				}
-				// Any other error stops the retry
-				err = fmt.Errorf("error getting host '%s': %s", id, ProviderErrorToString(err))
-				return nil
-			}
-
-			if server == nil {
-				err = fmt.Errorf("error getting host, nil response from gophercloud")
-				logrus.Debug(err)
-				return err
-			}
-
-			lastState := toHostState(server.Status)
-			if lastState != hoststate.ERROR && lastState != hoststate.STARTING {
-				if lastState != hoststate.STARTED {
-					logrus.Warnf("unexpected: host status of '%s' is '%s'", id, server.Status)
-				}
-				err = nil
-				return nil
-			}
-			return fmt.Errorf("server not ready yet")
-		},
-		temporal.GetMinDelay(),
-		timeout,
-	)
-	if retryErr != nil {
-		if _, ok := err.(retry.ErrTimeout); ok {
-			return nil, resources.TimeoutError(fmt.Sprintf("failed to get '%s' '%s' information after %s", "host", id, timeout), timeout)
-		}
-		return nil, retryErr
-	}
+func (s *Stack) queryServer(id string) (server *servers.Server, err error) {
+	server, err = s.waitHostState(id, hoststate.STARTED, 2*temporal.GetBigDelay())
 	if err != nil {
 		return nil, err
-	}
-	if notFound {
-		return nil, resources.ResourceNotFoundError("host", id)
 	}
 
 	if server == nil {
@@ -589,7 +533,7 @@ func (s *Stack) complementHost(host *resources.Host, server *servers.Server) err
 	}
 
 	host.LastState = toHostState(server.Status)
-	if host.LastState == hoststate.ERROR || host.LastState == hoststate.STARTING {
+	if host.LastState != hoststate.STARTED {
 		logrus.Warnf("[TRACE] Unexpected host's last state: %v", host.LastState)
 	}
 
@@ -883,14 +827,14 @@ func (s *Stack) CreateHost(request resources.HostRequest) (host *resources.Host,
 	// Retry creation until success, for 10 minutes
 	retryErr := retry.WhileUnsuccessfulDelay5Seconds(
 		func() error {
-			server, err := servers.Create(s.ComputeClient, keypairs.CreateOptsExt{
+			server, ierr := servers.Create(s.ComputeClient, keypairs.CreateOptsExt{
 				CreateOptsBuilder: srvOpts,
 			}).Extract()
-			if err != nil {
+			if ierr != nil {
 				if server != nil {
 					servers.Delete(s.ComputeClient, server.ID)
 				}
-				msg := ProviderErrorToString(err)
+				msg := ProviderErrorToString(ierr)
 				logrus.Warnf(msg)
 				return fmt.Errorf(msg)
 			}
@@ -912,20 +856,29 @@ func (s *Stack) CreateHost(request resources.HostRequest) (host *resources.Host,
 			}
 			host.ID = server.ID
 
+			defer func() {
+				if ierr != nil {
+					servers.Delete(s.ComputeClient, server.ID)
+				}
+			}()
+
 			// Wait that Host is ready, not just that the build is started
-			host, err = s.WaitHostReady(host, temporal.GetHostTimeout())
-			if err != nil {
-				servers.Delete(s.ComputeClient, server.ID)
-				msg := ProviderErrorToString(err)
-				logrus.Warnf(msg)
-				return fmt.Errorf(msg)
+			var srv *servers.Server
+			srv, ierr = s.waitHostState(host, hoststate.STARTED, temporal.GetHostTimeout())
+			if ierr != nil {
+				return fmt.Errorf(ProviderErrorToString(ierr))
 			}
+
+			if ierr = s.complementHost(host, srv); ierr != nil {
+				return fmt.Errorf(ProviderErrorToString(ierr))
+			}
+
 			return nil
 		},
 		temporal.GetLongOperationTimeout(),
 	)
 	if retryErr != nil {
-		return nil, userData, scerr.Wrap(retryErr, fmt.Sprintf("error creating host: timeout"))
+		return nil, userData, scerr.Wrap(retryErr, "error creating host")
 	}
 	logrus.Debugf("host resource created.")
 
@@ -1047,14 +1000,15 @@ func (s *Stack) SelectedAvailabilityZone() (string, error) {
 	return s.selectedAvailabilityZone, nil
 }
 
-// WaitHostReady waits an host achieve ready state
+// waitHostState waits an host achieve ready state
 // hostParam can be an ID of host, or an instance of *resources.Host; any other type will return an utils.ErrInvalidParameter
-func (s *Stack) WaitHostReady(hostParam interface{}, timeout time.Duration) (*resources.Host, error) {
+func (s *Stack) waitHostState(hostParam interface{}, state hoststate.Enum, timeout time.Duration) (server *servers.Server, err error) {
 	if s == nil {
 		return nil, scerr.InvalidInstanceError()
 	}
 
 	var host *resources.Host
+
 	switch hostParam := hostParam.(type) {
 	case string:
 		host = resources.NewHost()
@@ -1065,6 +1019,7 @@ func (s *Stack) WaitHostReady(hostParam interface{}, timeout time.Duration) (*re
 	if host == nil {
 		return nil, scerr.InvalidParameterError("hostParam", "must be a not-empty string or a *resources.Host!")
 	}
+
 	hostRef := host.Name
 	if hostRef == "" {
 		hostRef = host.ID
@@ -1074,26 +1029,87 @@ func (s *Stack) WaitHostReady(hostParam interface{}, timeout time.Duration) (*re
 
 	retryErr := retry.WhileUnsuccessful(
 		func() error {
-			hostTmp, err := s.InspectHost(host)
+			server, err = servers.Get(s.ComputeClient, host.ID).Extract()
 			if err != nil {
-				return err
+				switch err.(type) {
+				case gc.ErrDefault404:
+					// If error is "resource not found", we want to return GopherCloud error as-is to be able
+					// to behave differently in this special case. To do so, stop the retry
+					return scerr.AbortedError("", resources.ResourceNotFoundError("host", host.ID))
+				case gc.ErrDefault408:
+					// server timeout, retries
+					return err
+				case gc.ErrDefault409:
+					// specific handling for error 409
+					return scerr.AbortedError("", fmt.Errorf("error getting host '%s': %s", host.ID, ProviderErrorToString(err)))
+				case gc.ErrDefault503:
+					// Service Unavailable, retry
+					return err
+				case gc.ErrDefault500:
+					// When the response is "Internal Server Error", retries
+					return err
+				}
+
+				errorCode, failed := GetUnexpectedGophercloudErrorCode(err)
+				if failed == nil {
+					switch errorCode {
+					case 408:
+						return err
+					case 429:
+						return err
+					case 500:
+						return err
+					case 503:
+						return err
+					default:
+						return scerr.AbortedError("", fmt.Errorf("error getting host '%s': code: %d, reason: %s", host.ID, errorCode, err))
+					}
+				}
+
+				if IsServiceUnavailableError(err) {
+					return err
+				}
+
+				// Any other error stops the retry
+				return scerr.AbortedError("", fmt.Errorf("error getting host '%s': %s", host.ID, ProviderErrorToString(err)))
 			}
-			host = hostTmp
-			if host.LastState != hoststate.STARTED {
-				return fmt.Errorf("not in ready state (current state: %s)", host.LastState.String())
+
+			if server == nil {
+				return fmt.Errorf("error getting host, nil response from gophercloud")
 			}
-			return nil
+
+			lastState := toHostState(server.Status)
+			// If state matches, we consider this a success no matter what
+			if lastState == state {
+				return nil
+			}
+
+			if lastState == hoststate.ERROR {
+				return scerr.AbortedError("", resources.ResourceNotAvailableError("host", host.ID))
+			}
+
+			if !((lastState == hoststate.STARTING) || (lastState == hoststate.STOPPING)) {
+				return scerr.AbortedError("", fmt.Errorf("host status of '%s' is in state '%s', and that's not a transition state", host.ID, server.Status))
+			}
+
+			return fmt.Errorf("server not ready yet")
 		},
-		temporal.GetDefaultDelay(),
+		temporal.GetMinDelay(),
 		timeout,
 	)
 	if retryErr != nil {
 		if _, ok := retryErr.(retry.ErrTimeout); ok {
-			return host, resources.TimeoutError(fmt.Sprintf("timeout waiting to get host '%s' information after %v", host.Name, timeout), timeout)
+			return nil, resources.TimeoutError(fmt.Sprintf("timeout waiting to get host '%s' information after %v", host.Name, timeout), timeout)
 		}
-		return host, retryErr
+
+		if aborted, ok := retryErr.(retry.ErrAborted); ok {
+			return nil, aborted.Cause()
+		}
+
+		return nil, retryErr
 	}
-	return host, nil
+
+	return server, nil
 }
 
 // GetHostState returns the current state of host identified by id
@@ -1220,7 +1236,7 @@ func (s *Stack) DeleteHost(id string) error {
 			// 1st, send delete host order
 			err := servers.Delete(s.ComputeClient, id).ExtractErr()
 			if err != nil {
-				switch err.(type) {
+				switch err.(type) { // FIXME Is a mistake, all 40x errors should be considered
 				case gc.ErrDefault404:
 					// Resource not found, consider deletion successful
 					logrus.Debugf("Host '%s' not found, deletion considered successful", id)
@@ -1241,9 +1257,9 @@ func (s *Stack) DeleteHost(id string) error {
 						}
 						return fmt.Errorf("host '%s' state is '%s'", host.Name, host.Status)
 					}
-					// FIXME: captures more error types
+
 					switch err.(type) { // nolint
-					case gc.ErrDefault404:
+					case gc.ErrDefault404: // FIXME Is a mistake, all 40x errors should be considered
 						resourcePresent = false
 						return nil
 					}
@@ -1268,7 +1284,7 @@ func (s *Stack) DeleteHost(id string) error {
 		temporal.GetHostCleanupTimeout(),
 	)
 	if outerRetryErr != nil {
-		return scerr.Wrap(outerRetryErr, fmt.Sprintf("error deleting host: retry error"))
+		return scerr.Wrap(outerRetryErr, "error deleting host: retry error")
 	}
 	return nil
 }

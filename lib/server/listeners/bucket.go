@@ -27,7 +27,6 @@ import (
 
 	pb "github.com/CS-SI/SafeScale/lib"
 	"github.com/CS-SI/SafeScale/lib/server/handlers"
-	conv "github.com/CS-SI/SafeScale/lib/server/utils"
 	srvutils "github.com/CS-SI/SafeScale/lib/server/utils"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
 	"github.com/CS-SI/SafeScale/lib/utils/scerr"
@@ -71,7 +70,7 @@ func (s *BucketListener) List(ctx context.Context, in *googleprotobuf.Empty) (bl
 		return nil, status.Errorf(codes.Internal, tbr.Error())
 	}
 
-	return conv.ToPBBucketList(buckets), nil
+	return srvutils.ToPBBucketList(buckets), nil
 }
 
 // Create a new bucket
@@ -96,6 +95,35 @@ func (s *BucketListener) Create(ctx context.Context, in *pb.Bucket) (empty *goog
 	err = handler.Create(ctx, bucketName)
 	if err != nil {
 		tbr := scerr.Wrap(err, "cannot create bucket")
+		return nil, status.Errorf(codes.Internal, tbr.Error())
+	}
+
+	return &googleprotobuf.Empty{}, nil
+}
+
+// Destroy a bucket
+func (s *BucketListener) Destroy(ctx context.Context, in *pb.Bucket) (empty *googleprotobuf.Empty, err error) {
+	bucketName := in.GetName()
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", bucketName), true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	ctx, cancelFunc := context.WithCancel(ctx)
+
+	if err := srvutils.JobRegister(ctx, cancelFunc, "Bucket Destroy : "+bucketName); err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, fmt.Errorf("failed to register the process : %s", err.Error()).Error())
+	}
+
+	tenant := GetCurrentTenant()
+	if tenant == nil {
+		logrus.Info("Cannot destroy buckets: no tenant set")
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot delete bucket: no tenant set")
+	}
+
+	handler := BucketHandler(tenant.Service)
+	err = handler.Destroy(ctx, bucketName)
+	if err != nil {
+		tbr := scerr.Wrap(err, "cannot destroy bucket")
 		return nil, status.Errorf(codes.Internal, tbr.Error())
 	}
 
@@ -158,7 +186,7 @@ func (s *BucketListener) Inspect(ctx context.Context, in *pb.Bucket) (bmp *pb.Bu
 	if resp == nil {
 		return nil, status.Errorf(codes.NotFound, "cannot inspect bucket '%s': not found", in.GetName())
 	}
-	return conv.ToPBBucketMountPoint(resp), nil
+	return srvutils.ToPBBucketMountPoint(resp), nil
 }
 
 // Mount a bucket on the filesystem of the host

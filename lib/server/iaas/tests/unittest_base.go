@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/CS-SI/SafeScale/lib/server/iaas/stacks/aws"
+
 	"github.com/CS-SI/SafeScale/lib/utils/data"
 	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 
@@ -44,6 +46,7 @@ import (
 	libvirt "github.com/CS-SI/SafeScale/lib/server/iaas/stacks/libvirt"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/stacks/openstack"
 
+	_ "github.com/CS-SI/SafeScale/lib/server/iaas/providers/aws"            // Imported to initialize tenant ovh
 	_ "github.com/CS-SI/SafeScale/lib/server/iaas/providers/cloudferro"     // Imported to initialize tenant ovh
 	_ "github.com/CS-SI/SafeScale/lib/server/iaas/providers/flexibleengine" // Imported to initialize tenant flexibleengine
 	_ "github.com/CS-SI/SafeScale/lib/server/iaas/providers/gcp"            // Imported to initialize tenant gcp
@@ -65,6 +68,7 @@ func (tester *ServiceTester) VerifyStacks(t *testing.T) {
 	stack = &huaweicloud.Stack{} // nolint
 	stack = &openstack.Stack{}   // nolint
 	stack = &gcp.Stack{}         // nolint
+	stack = &aws.Stack{}         // nolint
 
 	_ = stack
 }
@@ -283,7 +287,7 @@ func (tester *ServiceTester) CreateNetworkTest(t *testing.T) {
 	network1, kp1 := tester.CreateNetwork(t, "unit_test_network_6", true, "1.1.1.0/24")
 	require.NotNil(t, network1)
 	require.NotNil(t, kp1)
-	fmt.Println(fmt.Sprintf("Created a Network with name %v and id %v", network1.Name, kp1.ID))
+	fmt.Printf("Created a Network with name %v and id %v\n", network1.Name, kp1.ID)
 
 	networkFound := false
 

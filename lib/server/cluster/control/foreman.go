@@ -50,6 +50,7 @@ import (
 	"github.com/CS-SI/SafeScale/lib/utils"
 	"github.com/CS-SI/SafeScale/lib/utils/cli/enums/outputs"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
+	"github.com/CS-SI/SafeScale/lib/utils/crypt"
 	"github.com/CS-SI/SafeScale/lib/utils/data"
 	"github.com/CS-SI/SafeScale/lib/utils/retry"
 	"github.com/CS-SI/SafeScale/lib/utils/scerr"
@@ -368,10 +369,19 @@ func (b *foreman) construct(task concurrency.Task, req Request) (err error) {
 
 	// Create a KeyPair for the user cladm
 	kpName = "cluster_" + req.Name + "_cladm_key"
-	kp, err = svc.CreateKeyPair(kpName)
+	kp, err = crypt.GenerateRSAKeyPair(kpName)
 	if err != nil {
 		return err
 	}
+
+	defer func() {
+		if err != nil && !req.KeepOnFailure {
+			derr := svc.DeleteKeyPair(kpName)
+			if derr != nil {
+				err = scerr.AddConsequence(err, derr)
+			}
+		}
+	}()
 
 	// Saving Cluster metadata, with status 'Creating'
 	b.cluster.Identity.Name = req.Name
@@ -504,16 +514,16 @@ func (b *foreman) construct(task concurrency.Task, req Request) (err error) {
 	// Step 2: awaits gateway installation end and masters installation end
 	_, primaryGatewayStatus = primaryGatewayTask.Wait()
 	if primaryGatewayStatus != nil {
-		mastersTask.Abort()
-		privateNodesTask.Abort()
+		_ = mastersTask.Abort() // FIXME Handle aborts
+		_ = privateNodesTask.Abort()
 		return primaryGatewayStatus
 	}
 	if !gwFailoverDisabled {
 		if secondaryGatewayTask != nil {
 			_, secondaryGatewayStatus = secondaryGatewayTask.Wait()
 			if secondaryGatewayStatus != nil {
-				mastersTask.Abort()
-				privateNodesTask.Abort()
+				_ = mastersTask.Abort()
+				_ = privateNodesTask.Abort()
 				return secondaryGatewayStatus
 			}
 		}
@@ -530,7 +540,7 @@ func (b *foreman) construct(task concurrency.Task, req Request) (err error) {
 	}()
 	_, mastersStatus = mastersTask.Wait()
 	if mastersStatus != nil {
-		privateNodesTask.Abort()
+		_ = privateNodesTask.Abort()
 		return mastersStatus
 	}
 
@@ -558,7 +568,7 @@ func (b *foreman) construct(task concurrency.Task, req Request) (err error) {
 	if primaryGatewayStatus != nil {
 		if !gwFailoverDisabled {
 			if secondaryGatewayTask != nil {
-				secondaryGatewayTask.Abort()
+				_ = secondaryGatewayTask.Abort()
 			}
 		}
 		return primaryGatewayStatus
@@ -651,10 +661,6 @@ func (b *foreman) destruct(task concurrency.Task) (err error) {
 		}
 	}
 
-	deleteNodeFunc := func(t concurrency.Task, params concurrency.TaskParameters) (concurrency.TaskResult, error) {
-		funcErr := cluster.DeleteSpecificNode(t, params.(string), "")
-		return nil, funcErr
-	}
 	deleteMasterFunc := func(t concurrency.Task, params concurrency.TaskParameters) (concurrency.TaskResult, error) {
 		funcErr := cluster.deleteMaster(t, params.(string))
 		return nil, funcErr
@@ -672,7 +678,7 @@ func (b *foreman) destruct(task concurrency.Task) (err error) {
 			if err != nil {
 				return err
 			}
-			subtask, err = subtask.Start(deleteNodeFunc, list[i])
+			subtask, err = subtask.Start(b.taskDeleteNode, list[i])
 			if err != nil {
 				return err
 			}
@@ -750,9 +756,15 @@ func (b *foreman) destruct(task concurrency.Task) (err error) {
 		cleaningErrors = append(cleaningErrors, err)
 		return scerr.ErrListError(cleaningErrors)
 	}
+
 	cluster.service = nil
 
 	return scerr.ErrListError(cleaningErrors)
+}
+
+func (b *foreman) taskDeleteNode(task concurrency.Task, params concurrency.TaskParameters) (concurrency.TaskResult, error) {
+	funcErr := b.cluster.DeleteSpecificNode(task, params.(string), "")
+	return nil, funcErr
 }
 
 // complementHostDefinition complements req with default values if needed
@@ -2024,6 +2036,14 @@ func (b *foreman) taskCreateNode(t concurrency.Task, params concurrency.TaskPara
 	var node *clusterpropsv1.Node
 	pbHost, err := clientHost.Create(hostDef, timeout)
 	if pbHost != nil {
+		defer func() {
+			if err != nil {
+				derr := clientHost.Delete([]string{pbHost.Id}, temporal.GetLongOperationTimeout())
+				if derr != nil {
+					err = scerr.AddConsequence(err, derr)
+				}
+			}
+		}()
 		mErr := b.cluster.UpdateMetadata(t, func() error {
 			// Locks for write the NodesV1 extension...
 			return b.cluster.GetProperties(t).LockForWrite(property.NodesV1).ThenUse(func(clonable data.Clonable) error {
@@ -2046,6 +2066,9 @@ func (b *foreman) taskCreateNode(t concurrency.Task, params concurrency.TaskPara
 			}
 			return nil, mErr
 		}
+		if mErr != nil {
+			logrus.Warnf("error writing cluster metadata of '%s'", pbHost.Id)
+		}
 	}
 	if err != nil {
 		return nil, client.DecorateError(err, fmt.Sprintf("[%s] creation failed: %s", hostLabel, err.Error()), true)
@@ -2053,43 +2076,20 @@ func (b *foreman) taskCreateNode(t concurrency.Task, params concurrency.TaskPara
 	hostLabel = fmt.Sprintf("node #%d (%s)", index, pbHost.Name)
 	logrus.Debugf("[%s] host resource creation successful.", hostLabel)
 
-	// err = b.cluster.UpdateMetadata(tr.Task(), func() error {
-	// 	// Locks for write the NodesV1 extension...
-	// 	return b.cluster.GetProperties(tr.Task()).LockForWrite(property.NodesV1).ThenUse(func(v interface{}) error {
-	// 		nodesV1 := v.(*clusterpropsv1.Nodes)
-	// 		// Registers the new Agent in the swarmCluster struct
-	// 		node = &clusterpropsv1.Node{
-	// 			ID:        pbHost.Id,
-	// 			Name:      pbHost.Name,
-	// 			PrivateIP: pbHost.PrivateIp,
-	// 			PublicIP:  pbHost.PublicIp,
-	// 		}
-	// 		nodesV1.PrivateNodes = append(nodesV1.PrivateNodes, node)
-	// 		return nil
-	// 	})
-	// })
-	// if err != nil {
-	// 	derr := clientHost.Delete([]string{pbHost.Id}, temporal.GetLongOperationTimeout())
-	// 	if derr != nil {
-	// 		logrus.Errorf("failed to delete node after failure")
-	// 	}
-	// 	logrus.Errorf("[%s] creation failed: %s", hostLabel, err.Error())
-	// 	err = fmt.Errorf("failed to create node: %s", err.Error())
-	// 	return
-	// }
-
 	err = b.installProxyCacheClient(t, pbHost, hostLabel)
 	if err != nil {
+		logrus.Debugf("[%s] failure installing proxy cache client", hostLabel)
 		return nil, err
 	}
 
 	err = b.installNodeRequirements(t, nodetype.Node, pbHost, hostLabel)
 	if err != nil {
+		logrus.Debugf("[%s] failure installing node requirements", hostLabel)
 		return nil, err
 	}
 
 	logrus.Debugf("[%s] host resource creation successful.", hostLabel)
-	return pbHost.Name, nil
+	return pbHost.Id, nil
 }
 
 // taskConfigureNodes configures nodes

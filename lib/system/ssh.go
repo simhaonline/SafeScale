@@ -19,10 +19,6 @@ package system
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -38,7 +34,6 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	"golang.org/x/crypto/ssh"
 
 	"github.com/CS-SI/SafeScale/lib/utils"
 	"github.com/CS-SI/SafeScale/lib/utils/cli"
@@ -435,7 +430,7 @@ func (sc *SSHCommand) Run(t concurrency.Task, outs outputs.Enum) (int, string, s
 
 // RunWithTimeout ...
 func (sc *SSHCommand) RunWithTimeout(task concurrency.Task, outs outputs.Enum, timeout time.Duration) (int, string, string, error) {
-	tracer := concurrency.NewTracer(task, fmt.Sprintf("(%s, %v)", outs.String(), timeout), false).WithStopwatch().GoingIn()
+	tracer := concurrency.NewTracer(task, fmt.Sprintf("(%s, %v)", outs.String(), timeout), true).WithStopwatch().GoingIn()
 	tracer.Trace("command=\n%s\n", sc.Display())
 	defer tracer.OnExitTrace()()
 
@@ -535,6 +530,7 @@ func (sc *SSHCommand) RunWithTimeout(task concurrency.Task, outs outputs.Enum, t
 	return -1, "", "", scerr.InconsistentError("'result' should have been of type 'data.Map'")
 }
 
+// taskExecute executes the command on remote host by SSH inside a task
 func (sc *SSHCommand) taskExecute(task concurrency.Task, p concurrency.TaskParameters) (concurrency.TaskResult, error) {
 	if sc == nil {
 		return nil, scerr.InvalidInstanceError()
@@ -553,20 +549,20 @@ func (sc *SSHCommand) taskExecute(task concurrency.Task, p concurrency.TaskParam
 	)
 	stdoutPipe, ok = params["stdout"].(io.ReadCloser)
 	if !ok {
-		return nil, scerr.InvalidParameterError("p[stdout]", "is missing or is not of type io.ReadCloser")
+		return nil, scerr.InvalidParameterError("p['stdout']", "is missing or is not of type io.ReadCloser")
 	}
 	if stdoutPipe == nil {
-		return nil, scerr.InvalidParameterError("p[stdout]", "cannot be nil")
+		return nil, scerr.InvalidParameterError("p['stdout']", "cannot be nil")
 	}
 	stderrPipe, ok = params["stderr"].(io.ReadCloser)
 	if !ok {
-		return nil, scerr.InvalidParameterError("p[stderr]", "is missing or is not of type io.ReadCloser")
+		return nil, scerr.InvalidParameterError("p['stderr']", "is missing or is not of type io.ReadCloser")
 	}
 	if stderrPipe == nil {
-		return nil, scerr.InvalidParameterError("p[stderr]", "cannot be nil")
+		return nil, scerr.InvalidParameterError("p['stderr']", "cannot be nil")
 	}
 	if collectOutputs, ok = params["collect_outputs"].(bool); !ok {
-		return nil, scerr.InvalidParameterError("p[collect_outputs]", "is missing or is not of type bool")
+		return nil, scerr.InvalidParameterError("p['collect_outputs']", "is missing or is not of type bool")
 	}
 
 	var (
@@ -597,6 +593,14 @@ func (sc *SSHCommand) taskExecute(task concurrency.Task, p concurrency.TaskParam
 		}
 	}
 
+	// Starts pipebridge if needed
+	if !collectOutputs {
+		err = pipeBridgeCtrl.Start(task)
+		if err != nil {
+			return result, err
+		}
+	}
+
 	// Launch the command and wait for its execution
 	if err := sc.Start(); err != nil {
 		return result, err
@@ -612,23 +616,22 @@ func (sc *SSHCommand) taskExecute(task concurrency.Task, p concurrency.TaskParam
 		if err != nil {
 			return result, err
 		}
-	} else {
-		err = pipeBridgeCtrl.Start(task)
-		if err != nil {
-			return result, err
-		}
 	}
 
 	var pbcErr error
 	err = sc.Wait()
 	_ = stdoutPipe.Close()
 	_ = stderrPipe.Close()
-
 	if err == nil {
 		result["retcode"] = 0
 		if collectOutputs {
 			result["stdout"] = string(msgOut)
 			result["stderr"] = string(msgErr)
+		} else {
+			pbcErr = pipeBridgeCtrl.Wait()
+			if pbcErr != nil {
+				logrus.Error(pbcErr.Error())
+			}
 		}
 	} else {
 		// If error doesn't contain ouputs and return code of the process, stop the pipe bridges and return error
@@ -645,6 +648,9 @@ func (sc *SSHCommand) taskExecute(task concurrency.Task, p concurrency.TaskParam
 		// Make sure all outputs have been processed
 		if !collectOutputs {
 			pbcErr = pipeBridgeCtrl.Wait()
+			if pbcErr != nil {
+				logrus.Error(pbcErr.Error())
+			}
 		}
 
 		// Extract execution information
@@ -660,10 +666,7 @@ func (sc *SSHCommand) taskExecute(task concurrency.Task, p concurrency.TaskParam
 			result["stderr"] = msgError
 		}
 	}
-	// Error happening on PipeBridgeController, when command succeeded, deserves to be logged
-	if !collectOutputs && pbcErr != nil {
-		logrus.Debug(pbcErr)
-	}
+
 	return result, nil
 }
 
@@ -870,7 +873,7 @@ func (ssh *SSHConfig) Copy(remotePath, localPath string, isUpload bool) (int, st
 		return 0, "", "", fmt.Errorf("unable to create temporary key file: %s", err.Error())
 	}
 
-	cmdTemplate, err := template.New("Command").Parse("scp -i {{.IdentityFile}} -P {{.Port}} {{.Options}} {{if .IsUpload}}'{{.LocalPath}}' {{.User}}@{{.Host}}:'{{.RemotePath}}'{{else}}{{.User}}@{{.Host}}:'{{.RemotePath}}' '{{.LocalPath}}'{{end}}")
+	cmdTemplate, err := template.New("Command").Parse(`scp -i {{.IdentityFile}} -P {{.Port}} {{.Options}} {{if .IsUpload}}"{{.LocalPath}}" {{.User}}@{{.Host}}:"{{.RemotePath}}"{{else}}{{.User}}@{{.Host}}:"{{.RemotePath}}" "{{.LocalPath}}"{{end}}`)
 	if err != nil {
 		return 0, "", "", fmt.Errorf("error parsing command template: %s", err.Error())
 	}
@@ -907,7 +910,7 @@ func (ssh *SSHConfig) Copy(remotePath, localPath string, isUpload bool) (int, st
 		keyFile: identityfile,
 	}
 
-	return sshCommand.Run(nil, outputs.COLLECT) // FIXME It CAN lock, use .RunWithTimeout instead
+	return sshCommand.Run(nil, outputs.COLLECT) // FIXME: It CAN lock, use .RunWithTimeout instead
 }
 
 // Exec executes the cmd using ssh
@@ -1049,25 +1052,4 @@ func (ssh *SSHConfig) CommandContext(ctx context.Context, cmdString string) (*SS
 		keyFile: keyFile,
 	}
 	return &sshCommand, nil
-}
-
-// CreateKeyPair creates a key pair
-func CreateKeyPair() (publicKeyBytes []byte, privateKeyBytes []byte, err error) {
-	privateKey, _ := rsa.GenerateKey(rand.Reader, 2048)
-	publicKey := privateKey.PublicKey
-	pub, err := ssh.NewPublicKey(&publicKey)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	publicKeyBytes = ssh.MarshalAuthorizedKey(pub)
-
-	priBytes := x509.MarshalPKCS1PrivateKey(privateKey)
-	privateKeyBytes = pem.EncodeToMemory(
-		&pem.Block{
-			Type:  "RSA PRIVATE KEY",
-			Bytes: priBytes,
-		},
-	)
-	return publicKeyBytes, privateKeyBytes, nil
 }

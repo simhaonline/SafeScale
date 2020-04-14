@@ -21,23 +21,20 @@ required = ["github.com/GeertJohan/go.rice", "golang.org/x/tools/cmd/stringer", 
   version = "=v0.2.3"
 
 [[override]]
+  name = "google.golang.org/genproto"
+  revision = "e7d98fc518a78c9f8b5ee77be7b0b317475d89e1"
+
+[[override]]
   name = "github.com/golang/protobuf"
-  version = "=v1.2.0"
+  version = "=v1.3.2"
 
 [[override]]
   name = "go.opencensus.io"
   revision = "9c377598961b706d1542bd2d84d538b5094d596e"
 
 [[override]]
-  name = "google.golang.org/genproto"
-  revision = "e7d98fc518a78c9f8b5ee77be7b0b317475d89e1"
-
-[[override]]
   name = "github.com/gophercloud/gophercloud"
   revision = "7892efa714f10951c5483a28c7471d8051b12975"
-
-#  branch = "master"
-# source = "github.com/oscarpicas/gophercloud.git"
 
 [[constraint]]
   name = "github.com/gorilla/websocket"
@@ -102,6 +99,10 @@ required = ["github.com/GeertJohan/go.rice", "golang.org/x/tools/cmd/stringer", 
 [[override]]
   name = "google.golang.org/grpc"
   version = "=v1.15.0"
+
+[[override]]
+  name = "google.golang.org/api"
+  version = "=v0.15.0"
 
 [[constraint]]
   name = "github.com/dlespiau/covertool"

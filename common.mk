@@ -1,4 +1,4 @@
-VERSION=20.01.0
+VERSION=20.03.1
 export VERSION
 
 ifeq ($(MAKE_LEVEL),)
@@ -14,9 +14,36 @@ ifndef VERBOSE
 MAKEFLAGS += --no-print-directory
 endif
 
+ifneq (, $(GOOS))
+ifneq (, $(GOARCH))
+ifneq (, $(GOBIN))
+$(error "Cross compilation cannot work with GOBIN defined. Stopping build.")
+endif
+endif
+endif
+
+ifneq (, $(GOOS))
+ifeq (, $(GOARCH))
+$(error "Cross compilation requires both GOOS and GOARCH to be specified. Stopping build.")
+endif
+endif
+
+ifeq (, $(GOOS))
+ifneq (, $(GOARCH))
+$(error "Cross compilation requires both GOOS and GOARCH to be specified. Stopping build.")
+endif
+endif
+
+ifeq (, $(GOOS))
+RACE_CHECK=-race
+else
+RACE_CHECK=
+endif
+
+BRANCH_NAME?="develop"
 FIRSTUPDATE := $(shell git remote update >/dev/null 2>&1)
 BUILD := $(shell git rev-parse HEAD)
-UPSTREAM := $(shell git rev-parse origin/develop)
+UPSTREAM := $(shell git rev-parse origin/$(BRANCH_NAME))
 LOCAL := $(shell git rev-parse HEAD)
 REMOTE := $(shell git rev-parse $(UPSTREAM))
 BASE := $(shell git merge-base HEAD $(UPSTREAM))
@@ -33,6 +60,10 @@ HOME := $(shell printf "%b" "$(HOME)" 2>/dev/null | tr '\' '/' > .tmpfile 2>/dev
 ifeq (, $(shell which rm))
 RM = del /Q
 endif
+endif
+
+ifeq ($(OS),Windows_NT)
+MAKE=mingw32-make.exe
 endif
 
 GOPATH?=$(HOME)/go
@@ -53,14 +84,29 @@ GOBIN=$(HOME)/go/bin
 endif
 
 # Handling multiple gopath: use $(HOME)/go by default
+ifneq ($(OS),Windows_NT)
 ifeq ($(findstring :,$(GOPATH)),:)
-GOINCLUDEPATH=$(HOME)/go
+ifeq (, $(GOMODPATH))
+$(error "Having a GOPATH with several directories is not recommended, when you have such a GOPATH: [$(GOPATH)], you must specify where your go modules are installed; by default the build looks for modules in 'GOMODPATH/pkg/mod' directory, so you must export the GOMODPATH variable before running the build")
+endif
 else
-GOINCLUDEPATH=$(GOPATH)
+GOMODPATH?=$(GOPATH)
+endif
 endif
 
+ifeq ($(OS),Windows_NT)
+ifeq ($(findstring ;,$(GOPATH)),;)
+ifeq (, $(GOMODPATH))
+$(error "Having a GOPATH with several directories is not recommended, when you have such a GOPATH: [$(GOPATH)], you must specify where your go modules are installed; by default the build looks for modules in 'GOMODPATH/pkg/mod' directory, so you must export the GOMODPATH variable before running the build")
+endif
+else
+GOMODPATH?=$(GOPATH)
+endif
+endif
+
+
 ifeq ($(strip $(GOPATH)),)
-GOINCLUDEPATH=$(HOME)/go
+GOMODPATH?=$(HOME)/go
 endif
 
 ifneq ($(OS),Windows_NT)

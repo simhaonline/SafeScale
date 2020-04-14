@@ -61,6 +61,66 @@ func (c *bucket) Create(name string, timeout time.Duration) error {
 	return err
 }
 
+// WaitGroup with timeout, returns true when it's a timeout
+func waitTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
+	c := make(chan struct{})
+	go func() {
+		defer close(c)
+		wg.Wait()
+	}()
+
+	select {
+	case <-c: // OK
+		return false
+	case <-time.After(timeout): // timeout
+		return true
+	}
+}
+
+// Destroy ...
+func (c *bucket) Destroy(names []string, timeout time.Duration) error {
+	c.session.Connect()
+	defer c.session.Disconnect()
+	service := pb.NewBucketServiceClient(c.session.connection)
+	ctx, err := utils.GetContext(true)
+	if err != nil {
+		return err
+	}
+
+	var (
+		mutex sync.Mutex
+		wg    sync.WaitGroup
+		errs  []string
+	)
+
+	bucketDeleter := func(aname string) {
+		defer wg.Done()
+		_, err := service.Destroy(ctx, &pb.Bucket{Name: aname})
+		if err != nil {
+			mutex.Lock()
+			errs = append(errs, err.Error())
+			mutex.Unlock()
+		}
+	}
+
+	wg.Add(len(names))
+	for _, target := range names {
+		go bucketDeleter(target)
+	}
+
+	isTimeout := waitTimeout(&wg, timeout)
+
+	if len(errs) > 0 {
+		return clitools.ExitOnRPC(strings.Join(errs, ", "))
+	}
+
+	if isTimeout {
+		return clitools.ExitOnRPC("timeout destroying buckets")
+	}
+
+	return nil
+}
+
 // Delete ...
 func (c *bucket) Delete(names []string, timeout time.Duration) error {
 	c.session.Connect()
@@ -91,11 +151,17 @@ func (c *bucket) Delete(names []string, timeout time.Duration) error {
 	for _, target := range names {
 		go bucketDeleter(target)
 	}
-	wg.Wait()
+
+	isTimeout := waitTimeout(&wg, timeout)
 
 	if len(errs) > 0 {
 		return clitools.ExitOnRPC(strings.Join(errs, ", "))
 	}
+
+	if isTimeout {
+		return clitools.ExitOnRPC("timeout deleting buckets")
+	}
+
 	return nil
 }
 
@@ -108,6 +174,8 @@ func (c *bucket) Inspect(name string, timeout time.Duration) (*pb.BucketMounting
 	if err != nil {
 		return nil, err
 	}
+
+	// FIXME Use waitTimeout with other functions
 
 	return service.Inspect(ctx, &pb.Bucket{Name: name})
 }

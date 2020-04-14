@@ -169,7 +169,7 @@ func UploadFile(localpath string, host *pb.Host, remotepath, owner, group, right
 
 	to := fmt.Sprintf("%s:%s", host.Name, remotepath)
 
-	tracer := concurrency.NewTracer(nil, "", true).WithStopwatch().GoingIn()
+	tracer := concurrency.NewTracer(nil, fmt.Sprintf("(%s, %s:%s)", localpath, host.Name, remotepath), true).WithStopwatch().GoingIn()
 	defer tracer.OnExitTrace()()
 	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
@@ -246,7 +246,7 @@ func UploadFile(localpath string, host *pb.Host, remotepath, owner, group, right
 			return nil
 		},
 		temporal.GetMinDelay(),
-		temporal.GetContextTimeout(),
+		temporal.GetLongOperationTimeout(),
 	)
 	if retryErr != nil {
 		switch retryErr.(type) {

@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Script customized for {{.ProviderName}} driver
+
 {{.Header}}
 
 print_error() {
@@ -107,7 +109,7 @@ pathprepend $HOME/.local/bin
 pathappend /opt/safescale/bin
 EOF
 
-	chown -R safescale:safescale /opt/safescale
+	chown -R {{.User}}:{{.User}} /opt/safescale
 	chmod -R 0640 /opt/safescale
 	find /opt/safescale -type d -exec chmod a+rx {} \;
 	chmod 1777 /opt/safescale/var/tmp
@@ -154,12 +156,20 @@ disable_services() {
 
 # If host isn't a gateway, we need to configure temporarily and manually gateway on private hosts to be able to update packages
 ensure_network_connectivity() {
+  op=-1
+  CONNECTED=$(curl -I www.google.com -m 5 | grep "200 OK") && op=$? || true
+  [ $op -ne 0 ] && echo "ensure_network_connectivity started WITHOUT network..." || echo "ensure_network_connectivity started WITH network..."
+
 	{{- if .AddGateway }}
 		route del -net default &>/dev/null
 		route add -net default gw {{ .DefaultRouteIP }}
 	{{- else }}
 	:
 	{{- end}}
+
+	op=-1
+  CONNECTED=$(curl -I www.google.com -m 5 | grep "200 OK") && op=$? || true
+  [ $op -ne 0 ] && echo "ensure_network_connectivity finished WITHOUT network..." || echo "ensure_network_connectivity finished WITH network..."
 }
 
 # ---- Main

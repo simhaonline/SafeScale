@@ -1,11 +1,13 @@
-#FROM golang:1.10
-FROM ubuntu:artful
+FROM ubuntu:bionic
 LABEL maintainer="CS SI"
 ARG http_proxy=""
 ARG https_proxy=""
 ARG LC_ALL=C.UTF-8
 ARG LANG=C.UTF-8
 ENV DEBIAN_FRONTEND noninteractive
+ENV BUILD_ENV docker
+ARG BRANCH_NAME
+ARG GOVERSION=1.13.5
 
 # -----------------
 # Standard packages
@@ -21,6 +23,8 @@ wget \
 unzip \
 vim \
 git \
+jq \
+openssh-server \
 python3.6 \
 python3-pip \
 && apt-get autoclean -y \
@@ -30,12 +34,12 @@ python3-pip \
 WORKDIR /tmp
 
 # ----------------------
-# Install GO 1.10
+# Install GO 1.13
 # ----------------------
-RUN wget https://dl.google.com/go/go1.10.3.linux-amd64.tar.gz \
-&& tar -C /usr/local -xzf go1.10.3.linux-amd64.tar.gz 
-ENV PATH $PATH:/usr/local/go/bin:/go/bin
-RUN rm /tmp/go1.10.3.linux-amd64.tar.gz
+RUN wget https://dl.google.com/go/go$GOVERSION.linux-amd64.tar.gz \
+&& tar -C /usr/local -xzf go$GOVERSION.linux-amd64.tar.gz
+ENV PATH $PATH:/usr/local/go/bin:/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+RUN rm /tmp/go$GOVERSION.linux-amd64.tar.gz
 
 # ----------------------
 # Install Protoc
@@ -49,4 +53,8 @@ ENV SHELL /bin/bash
 ENV GOPATH /go
 COPY build-safescale.sh /opt/build-safescale.sh
 
-ENTRYPOINT ["/opt/build-safescale.sh"]
+CMD sleep 5
+
+COPY marker /dev/null
+
+RUN cd /opt && ./build-safescale.sh

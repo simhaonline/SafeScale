@@ -26,7 +26,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CS-SI/SafeScale/lib/utils/retry"
 	"github.com/CS-SI/SafeScale/lib/utils/scerr"
+	"github.com/CS-SI/SafeScale/lib/utils/temporal"
 
 	scribble "github.com/nanobox-io/golang-scribble"
 	uuid "github.com/satori/go.uuid"
@@ -162,7 +164,7 @@ func (svc *service) WaitHostState(hostID string, state hoststate.Enum, timeout t
 		}
 		select {
 		case <-timer:
-			return scerr.TimeoutError("Wait volume state timeout", timeout, nil)
+			return scerr.TimeoutError("Wait host state timeout", timeout, nil)
 		default:
 			time.Sleep(1 * time.Second)
 		}
@@ -455,7 +457,15 @@ func (svc *service) FilterImages(filter string) ([]resources.Image, error) {
 		return nil, scerr.InvalidInstanceError()
 	}
 
-	imgs, err := svc.ListImages(false)
+	var imgs []resources.Image
+	err := retry.WhileUnsuccessfulDelay5Seconds(
+		func() error {
+			var err error
+			imgs, err = svc.ListImages(false)
+			return err
+		},
+		temporal.GetExecutionTimeout(),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -533,6 +543,27 @@ func (svc *service) SearchImage(osname string) (*resources.Image, error) {
 	imgs, err := svc.ListImages(false)
 	if err != nil {
 		return nil, err
+	}
+
+	log.Debugf("We are looking for an image for %s", svc.GetName())
+
+	if svc.GetName() == "aws" {
+		// FIXME AWS Mappings
+
+		if strings.EqualFold(osname, "CentOS 7.3") {
+			osname = "ami-0ec8d2a455affc7e4"
+		}
+
+		if strings.EqualFold(osname, "Ubuntu 18.04") {
+			osname = "ami-0cc0a36f626a4fdf5"
+		}
+	}
+
+	// If is an exact match for an Image return that image
+	for _, img := range imgs {
+		if img.ID == osname {
+			return &img, nil
+		}
 	}
 
 	maxscore := 0.0

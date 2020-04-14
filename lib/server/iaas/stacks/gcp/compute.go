@@ -17,10 +17,6 @@
 package gcp
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"strconv"
 	"time"
@@ -28,7 +24,6 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	uuid "github.com/satori/go.uuid"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/crypto/ssh"
 	"google.golang.org/api/compute/v1"
 	"google.golang.org/api/googleapi"
 
@@ -40,6 +35,7 @@ import (
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/userdata"
 	"github.com/CS-SI/SafeScale/lib/utils"
 	"github.com/CS-SI/SafeScale/lib/utils/concurrency"
+	"github.com/CS-SI/SafeScale/lib/utils/crypt"
 	"github.com/CS-SI/SafeScale/lib/utils/data"
 	"github.com/CS-SI/SafeScale/lib/utils/retry"
 	"github.com/CS-SI/SafeScale/lib/utils/scerr"
@@ -176,7 +172,7 @@ func (s *Stack) GetTemplate(id string) (*resources.HostTemplate, error) {
 
 //-------------SSH KEYS-------------------------------------------------------------------------------------------------
 
-// CreateKeyPair creates and import a key pair
+// CreateKeyPair creates a key pair (no import)
 func (s *Stack) CreateKeyPair(name string) (*resources.KeyPair, error) {
 	if s == nil {
 		return nil, scerr.InvalidInstanceError()
@@ -185,26 +181,27 @@ func (s *Stack) CreateKeyPair(name string) (*resources.KeyPair, error) {
 		return nil, scerr.InvalidParameterError("name", "cannot be empty string")
 	}
 
-	privateKey, _ := rsa.GenerateKey(rand.Reader, 2048)
-	publicKey := privateKey.PublicKey
-	pub, _ := ssh.NewPublicKey(&publicKey)
-	pubBytes := ssh.MarshalAuthorizedKey(pub)
-	pubKey := string(pubBytes)
+	// privateKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	// publicKey := privateKey.PublicKey
+	// pub, _ := ssh.NewPublicKey(&publicKey)
+	// pubBytes := ssh.MarshalAuthorizedKey(pub)
+	// pubKey := string(pubBytes)
 
-	priBytes := x509.MarshalPKCS1PrivateKey(privateKey)
-	priKeyPem := pem.EncodeToMemory(
-		&pem.Block{
-			Type:  "RSA PRIVATE KEY",
-			Bytes: priBytes,
-		},
-	)
-	priKey := string(priKeyPem)
-	return &resources.KeyPair{
-		ID:         name,
-		Name:       name,
-		PublicKey:  pubKey,
-		PrivateKey: priKey,
-	}, nil
+	// priBytes := x509.MarshalPKCS1PrivateKey(privateKey)
+	// priKeyPem := pem.EncodeToMemory(
+	// 	&pem.Block{
+	// 		Type:  "RSA PRIVATE KEY",
+	// 		Bytes: priBytes,
+	// 	},
+	// )
+	// priKey := string(priKeyPem)
+	// return &resources.KeyPair{
+	// 	ID:         name,
+	// 	Name:       name,
+	// 	PublicKey:  pubKey,
+	// 	PrivateKey: priKey,
+	// }, nil
+	return crypt.GenerateRSAKeyPair(name)
 }
 
 // GetKeyPair returns the key pair identified by id
@@ -219,7 +216,7 @@ func (s *Stack) ListKeyPairs() ([]resources.KeyPair, error) {
 
 // DeleteKeyPair deletes the key pair identified by id
 func (s *Stack) DeleteKeyPair(id string) error {
-	return scerr.NotImplementedError("DeleteKeyPair() not implemented yet")
+	return nil
 }
 
 // CreateHost creates an host satisfying request
@@ -228,6 +225,7 @@ func (s *Stack) CreateHost(request resources.HostRequest) (host *resources.Host,
 		return nil, nil, scerr.InvalidInstanceError()
 	}
 
+	defer scerr.OnPanic(&err)()
 	userData = userdata.NewContent()
 
 	resourceName := request.ResourceName
@@ -390,7 +388,7 @@ func (s *Stack) CreateHost(request resources.HostRequest) (host *resources.Host,
 	// Retry creation until success, for 10 minutes
 	retryErr := retry.WhileUnsuccessfulDelay5Seconds(
 		func() error {
-			server, err := buildGcpMachine(s.ComputeService, s.GcpConfig.ProjectID, request.ResourceName, rim.URL, s.GcpConfig.Zone, s.GcpConfig.NetworkName, defaultNetwork.Name, string(userDataPhase1), isGateway, template)
+			server, err := buildGcpMachine(s.ComputeService, s.GcpConfig.ProjectID, request.ResourceName, rim.URL, s.GcpConfig.Region, s.GcpConfig.Zone, s.GcpConfig.NetworkName, defaultNetwork.Name, string(userDataPhase1), isGateway, template)
 			if err != nil {
 				if server != nil {
 					// try deleting server
@@ -409,7 +407,8 @@ func (s *Stack) CreateHost(request resources.HostRequest) (host *resources.Host,
 
 				if gerr, ok := err.(*googleapi.Error); ok {
 					logrus.Warnf("Received GCP errorcode: %d", gerr.Code)
-					if gerr.Code == 403 {
+
+					if !(gerr.Code == 200 || gerr.Code == 429 || gerr.Code == 500 || gerr.Code == 503) {
 						desistError = gerr
 						return nil
 					}
@@ -547,7 +546,7 @@ func publicAccess(isPublic bool) []*compute.AccessConfig {
 }
 
 // buildGcpMachine ...
-func buildGcpMachine(service *compute.Service, projectID string, instanceName string, imageID string, zone string, network string, subnetwork string, userdata string, isPublic bool, template *resources.HostTemplate) (*resources.Host, error) {
+func buildGcpMachine(service *compute.Service, projectID string, instanceName string, imageID string, region string, zone string, network string, subnetwork string, userdata string, isPublic bool, template *resources.HostTemplate) (*resources.Host, error) {
 	prefix := "https://www.googleapis.com/compute/v1/projects/" + projectID
 
 	imageURL := imageID
@@ -581,7 +580,7 @@ func buildGcpMachine(service *compute.Service, projectID string, instanceName st
 			{
 				AccessConfigs: publicAccess(isPublic),
 				Network:       prefix + "/global/networks/" + network,
-				Subnetwork:    prefix + "/regions/europe-west1/subnetworks/" + subnetwork,
+				Subnetwork:    prefix + "/regions/" + region + "/subnetworks/" + subnetwork,
 			},
 		},
 		ServiceAccounts: []*compute.ServiceAccount{
@@ -679,6 +678,9 @@ func (s *Stack) InspectHost(hostParam interface{}) (host *resources.Host, err er
 	if err != nil {
 		return nil, err
 	}
+
+	host.Name = gcpHost.Name
+
 	var subnets []IPInSubnet
 
 	for _, nit := range gcpHost.NetworkInterfaces {

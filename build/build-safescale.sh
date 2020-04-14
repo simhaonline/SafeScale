@@ -1,4 +1,9 @@
-#! /bin/sh
+#! /bin/bash
+
+echo "Checks..."
+if [[ ! -v BUILD_ENV ]]; then
+    echo "BUILD_ENV is not set, this script is intented to run inside a docker container" && return 1
+fi
 
 # ----------------------
 # Create working directory
@@ -20,24 +25,32 @@ echo "Cloning branch '${BRANCH_NAME}' from repo '${GIT_REPO_URL}'"
 git clone ${GIT_REPO_URL} -b ${BRANCH_NAME} --depth=1
 
 cd SafeScale
+sed -i "s#\(.*\)develop#\1${BRANCH_NAME}#" common.mk
 
 # ----------------------
 # Compile
 # ----------------------
-echo "Compile"
+echo "Get dev deps"
+make getdevdeps
+[ $? -ne 0 ] && echo "Build getdevdeps failure" && exit 1
+
+echo "Ensure"
+make ensure
+[ $? -ne 0 ] && echo "Build ensure failure" && exit 1
+
+echo "All"
 make all
+[ $? -ne 0 ] && echo "Build failure" && exit 1
 
 echo "Install"
 make install
+[ $? -ne 0 ] && echo "Install failure" && exit 1
 
-# ----------------------
-# Copy produced binaries to export directory
-# ----------------------
-EXPDIR=/usr/local/safescale/bin
-echo "Copy produced binaries to export directory '${EXPDIR}'"
-mkdir -p ${EXPDIR}
+echo "Export"
+export CIBIN=/exported
+mkdir -p /exported
 
-cp ${GOPATH}/bin/safescale ${EXPDIR}
-cp ${GOPATH}/bin/safescaled ${EXPDIR}
-cp ${GOPATH}/bin/deploy ${EXPDIR}
-cp ${GOPATH}/bin/perform ${EXPDIR}
+CIBIN=/exported make installci
+[ $? -ne 0 ] && echo "Export failure" && exit 1
+
+exit 0
