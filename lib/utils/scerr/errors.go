@@ -157,6 +157,14 @@ func Wrap(cause error, message string) ErrCore {
 	return NewErrCore(message, cause, []error{})
 }
 
+func ErrorfWithCause(message string, cause error) ErrCore {
+	return NewErrCore(message, cause, nil)
+}
+
+func Errorf(message string, cause error) ErrCore {
+	return NewErrCore(message, cause, nil)
+}
+
 // NewErrCore creates a new error with a message 'message', a cause error 'cause' and a list of teardown problems 'consequences'
 func NewErrCore(message string, cause error, consequences []error) ErrCore {
 	if consequences == nil {
@@ -196,6 +204,22 @@ func (e ErrCore) Error() string {
 
 type causer interface {
 	Cause() error
+}
+
+func ImplementsCauser(inErr error) bool {
+	if _, ok := inErr.(causer); ok {
+		return true
+	}
+
+	return false
+}
+
+func ImplementsConsequencer(inErr error) bool {
+	if _, ok := inErr.(consequencer); ok {
+		return true
+	}
+
+	return false
 }
 
 // Cause returns the cause of an error if it implements the causer interface
@@ -257,6 +281,17 @@ func NotFoundError(msg string) ErrNotFound {
 		ErrCore: ErrCore{
 			Message:      msg,
 			cause:        nil,
+			consequences: []error{},
+		},
+	}
+}
+
+// NotFoundError creates a ErrNotFound error with a cause
+func NotFoundErrorWithCause(msg string, cause error) ErrNotFound {
+	return ErrNotFound{
+		ErrCore: ErrCore{
+			Message:      msg,
+			cause:        cause,
 			consequences: []error{},
 		},
 	}
@@ -387,6 +422,8 @@ func (e ErrAborted) AddConsequence(err error) error {
 func AbortedError(msg string, err error) ErrAborted {
 	if msg == "" {
 		msg = "aborted"
+	} else {
+		msg = "aborted: " + msg
 	}
 	return ErrAborted{
 		ErrCore: ErrCore{

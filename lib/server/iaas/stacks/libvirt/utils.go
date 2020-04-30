@@ -1,7 +1,7 @@
 //+build libvirt
 
 /*
- * Copyright 2018, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -64,7 +64,7 @@ func (iw *VMInfoWaiterStruct) deregister(name string) error {
 	iw.mutex.Unlock()
 
 	if !found {
-		return fmt.Errorf("nothing registered with the name %s", name)
+		return scerr.Errorf(fmt.Sprintf("nothing registered with the name %s", name), err)
 	}
 	fmt.Println("Deregistered : ", name)
 	return nil
@@ -75,7 +75,7 @@ func GetInfoWaiter() (*VMInfoWaiterStruct, error) {
 	if vmInfoWaiter.listner == nil {
 		listener, err := net.Listen("tcp", ":0")
 		if err != nil {
-			return nil, fmt.Errorf("failed to open a tcp connection : %s", err.Error())
+			return nil, scerr.Errorf(fmt.Sprintf("failed to open a tcp connection : %s", err.Error()), err)
 		}
 		vmInfoWaiter.port = listener.Addr().(*net.TCPAddr).Port
 		vmInfoWaiter.listner = &listener

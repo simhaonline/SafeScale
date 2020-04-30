@@ -1,5 +1,5 @@
 /*
- * Copyright 2018, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -281,7 +281,7 @@ func (s *Stack) ListNetworks() ([]*resources.Network, error) {
 	for paginate := true; paginate; {
 		resp, err := compuService.Networks.List(s.GcpConfig.ProjectID).PageToken(token).Do()
 		if err != nil {
-			return networks, fmt.Errorf("cannot list networks ...: %s", err)
+			return networks, scerr.Errorf(fmt.Sprintf("cannot list networks ...: %s", err), err)
 		}
 
 		for _, nett := range resp.Items {
@@ -300,7 +300,7 @@ func (s *Stack) ListNetworks() ([]*resources.Network, error) {
 	for paginate := true; paginate; {
 		resp, err := compuService.Subnetworks.List(s.GcpConfig.ProjectID, s.GcpConfig.Region).PageToken(token).Do()
 		if err != nil {
-			return networks, fmt.Errorf("cannot list subnetworks ...: %s", err)
+			return networks, scerr.Errorf(fmt.Sprintf("cannot list subnetworks ...: %s", err), err)
 		}
 
 		for _, nett := range resp.Items {
@@ -336,7 +336,7 @@ func (s *Stack) DeleteNetwork(ref string) (err error) {
 	}
 
 	if theNetwork == nil {
-		return fmt.Errorf("delete network failed: unexpected nil network when looking for [%s]", ref)
+		return scerr.Errorf(fmt.Sprintf("delete network failed: unexpected nil network when looking for [%s]", ref), err)
 	}
 
 	if !theNetwork.OK() {
@@ -448,7 +448,7 @@ func (s *Stack) CreateGateway(req resources.GatewayRequest) (*resources.Host, *u
 		case scerr.ErrInvalidRequest:
 			return nil, userData, err
 		default:
-			return nil, userData, fmt.Errorf("error creating gateway : %s", err)
+			return nil, userData, scerr.Errorf(fmt.Sprintf("error creating gateway : %s", err), err)
 		}
 	}
 
@@ -473,25 +473,25 @@ func (s *Stack) DeleteGateway(ref string) error {
 // CreateVIP creates a private virtual IP
 // If public is set to true,
 func (s *Stack) CreateVIP(networkID string, description string) (*resources.VirtualIP, error) {
-	return nil, scerr.NotImplementedError("CreateVIP() not implemented yet")
+	return nil, scerr.NotImplementedError("CreateVIP() not implemented yet") // FIXME Technical debt
 }
 
 // AddPublicIPToVIP adds a public IP to VIP
 func (s *Stack) AddPublicIPToVIP(vip *resources.VirtualIP) error {
-	return scerr.NotImplementedError("AddPublicIPToVIP() not implemented yet")
+	return scerr.NotImplementedError("AddPublicIPToVIP() not implemented yet") // FIXME Technical debt
 }
 
 // BindHostToVIP makes the host passed as parameter an allowed "target" of the VIP
 func (s *Stack) BindHostToVIP(vip *resources.VirtualIP, hostID string) error {
-	return scerr.NotImplementedError("BindHostToVIP() not implemented yet")
+	return scerr.NotImplementedError("BindHostToVIP() not implemented yet") // FIXME Technical debt
 }
 
 // UnbindHostFromVIP removes the bind between the VIP and a host
 func (s *Stack) UnbindHostFromVIP(vip *resources.VirtualIP, hostID string) error {
-	return scerr.NotImplementedError("UnbindHostFromVIP() not implemented yet")
+	return scerr.NotImplementedError("UnbindHostFromVIP() not implemented yet") // FIXME Technical debt
 }
 
 // DeleteVIP deletes the port corresponding to the VIP
 func (s *Stack) DeleteVIP(vip *resources.VirtualIP) error {
-	return scerr.NotImplementedError("DeleteVIP() not implemented yet")
+	return scerr.NotImplementedError("DeleteVIP() not implemented yet") // FIXME Technical debt
 }

@@ -634,7 +634,7 @@ func (sc *SSHCommand) taskExecute(task concurrency.Task, p concurrency.TaskParam
 			}
 		}
 	} else {
-		// If error doesn't contain ouputs and return code of the process, stop the pipe bridges and return error
+		// If error doesn't contain outputs and return code of the process, stop the pipe bridges and return error
 		if _, ok := err.(*exec.ExitError); !ok {
 			if !collectOutputs {
 				derr := pipeBridgeCtrl.Stop()
@@ -781,7 +781,6 @@ func (ssh *SSHConfig) Command(cmdString string) (*SSHCommand, error) {
 
 // SudoCommand returns the cmd struct to execute cmdString remotely. Command is executed with sudo
 func (ssh *SSHConfig) SudoCommand(cmdString string, withSudo bool) (*SSHCommand, error) {
-	// FIXME Add traces
 	return ssh.command(cmdString, false, true)
 }
 

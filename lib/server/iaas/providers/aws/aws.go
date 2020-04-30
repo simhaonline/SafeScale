@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019, CS Systemes d'Information, http://www.c-s.fr
+ * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ package aws
 
 import (
 	"fmt"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 	"github.com/sirupsen/logrus"
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
@@ -38,19 +39,19 @@ type provider struct {
 }
 
 func (p *provider) AddPublicIPToVIP(ip *resources.VirtualIP) error {
-	panic("implement me") // FIXME Technical debt
+	return scerr.NotImplementedError("AddPublicIPToVIP() not implemented yet") // FIXME Technical debt
 }
 
 func (p *provider) BindHostToVIP(*resources.VirtualIP, string) error {
-	panic("implement me") // FIXME Technical debt
+	return scerr.NotImplementedError("BindHostToVIP() not implemented yet") // FIXME Technical debt
 }
 
 func (p *provider) UnbindHostFromVIP(*resources.VirtualIP, string) error {
-	panic("implement me") // FIXME Technical debt
+	return scerr.NotImplementedError("UnbindHostFromVIP() not implemented yet") // FIXME Technical debt
 }
 
 func (p *provider) DeleteVIP(*resources.VirtualIP) error {
-	panic("implement me") // FIXME Technical debt
+	return scerr.NotImplementedError("DeleteVIP() not implemented yet") // FIXME Technical debt
 }
 
 func (p *provider) GetTenantParameters() map[string]interface{} {
@@ -149,7 +150,6 @@ func (p *provider) Build(params map[string]interface{}) (apiprovider.Provider, e
 		operatorUsername = operatorUsernameIf.(string)
 	}
 
-	// FIXME Use authentication options
 	authOptions := stacks.AuthenticationOptions{
 		IdentityEndpoint: identityEndpoint,
 		Username:         username,
@@ -182,7 +182,7 @@ func (p *provider) Build(params map[string]interface{}) (apiprovider.Provider, e
 		OperatorUsername: operatorUsername,
 		UseNATService:    false,
 		ProviderName:     providerName,
-		BuildSubnetworks: false, // FIXME AWS pass this as a parameter, make it FALSE by default
+		BuildSubnetworks: false, // FIXME AWS by default don't build subnetworks
 	}
 
 	stack, err := aws.New(authOptions, awsConf, cfgOptions)
