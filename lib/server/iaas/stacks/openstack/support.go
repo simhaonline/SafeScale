@@ -15,9 +15,12 @@ func caseInsensitiveContains(haystack, needle string) bool {
 }
 
 func IsServiceUnavailableError(err error) bool {
-	text := err.Error()
+	if err != nil {
+		text := err.Error()
+		return caseInsensitiveContains(text, "Service Unavailable")
+	}
 
-	return caseInsensitiveContains(text, "Service Unavailable")
+	return false
 }
 
 func GetUnexpectedGophercloudErrorCode(err error) (int64, error) {
@@ -40,4 +43,38 @@ func GetUnexpectedGophercloudErrorCode(err error) (int64, error) {
 	}
 
 	return 0, scerr.Errorf(fmt.Sprintf("not a gophercloud.ErrUnexpectedResponseCode"), nil)
+}
+
+func ReinterpretGophercloudErrorCode(gopherErr error, success []int64, transparent []int64, abort []int64, defaultHandler func(error) error) error {
+	if gopherErr == nil {
+		return gopherErr
+	}
+
+	if code, err := GetUnexpectedGophercloudErrorCode(gopherErr); code != 0 && err == nil {
+		for _, tcode := range success {
+			if tcode == code {
+				return nil
+			}
+		}
+
+		for _, tcode := range abort {
+			if tcode == code {
+				return scerr.AbortedError("", gopherErr)
+			}
+		}
+
+		for _, tcode := range transparent {
+			if tcode == code {
+				return gopherErr
+			}
+		}
+
+		if defaultHandler == nil {
+			return nil
+		}
+
+		return defaultHandler(gopherErr)
+	}
+
+	return gopherErr
 }
