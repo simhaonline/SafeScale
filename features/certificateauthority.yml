@@ -48,7 +48,7 @@ feature:
                             masters: one
                         run: |
                             case $LINUX_KIND in
-                                centos|redhat)
+                                centos|fedora|redhat|rhel)
                                     yum install -y openssl || sfFail 192 "Unable to install openssl"
                                     ;;
                                 debian|ubuntu)
@@ -204,7 +204,7 @@ feature:
                                 {{ if .ClusterFlavor }}
                                 CACN="{{ .ClusterName }}-CA.crt"
                                 {{ else }}
-                                CACN="{{ .Hostname }}-CA.crt"
+                                CACN="$(hostname -s)-CA.crt"
                                 {{ end }}
                                 SUBJ="${SUBJ}/CN=${CACN}"
                                 openssl req -config ${SF_ETCDIR}/pki/ca/openssl.cnf \
@@ -262,7 +262,7 @@ feature:
                             {{ if .ClusterFlavor }}
                             CACN="{{ .ClusterName }}-CA.crt"
                             {{ else }}
-                            CACN="{{ .Hostname }}-CA.crt"
+                            CACN="$(hostname -s)-CA.crt"
                             {{ end }}
                             # Add the new CA in system CAs
                             case $(sfGetFact "linux_kind") in
@@ -270,7 +270,7 @@ feature:
                                     ln -s ${SF_ETCDIR}/pki/ca/certs/rootca.cert.pem /usr/local/share/ca-certificates/$CACN
                                     update-ca-certificates || sfFail 198
                                     ;;
-                                redhat|centos)
+                                redhat|rhel|centos|fedora)
                                     if [ $(sfGetFact "linux_version") = 6 ]; then
                                         TARGET=/usr/local/share/ca-certificates
                                     else

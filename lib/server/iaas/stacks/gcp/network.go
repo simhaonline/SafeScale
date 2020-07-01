@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/sirupsen/logrus"
@@ -421,14 +422,15 @@ func (s *Stack) DeleteNetwork(ref string) (err error) {
 }
 
 // CreateGateway creates a public Gateway for a private network
-func (s *Stack) CreateGateway(req resources.GatewayRequest) (*resources.Host, *userdata.Content, error) {
+func (s *Stack) CreateGateway(req resources.GatewayRequest, sizing *resources.SizingRequirements) (*resources.Host, *userdata.Content, error) {
 	if s == nil {
 		return nil, nil, scerr.InvalidInstanceError()
 	}
 	if req.Network == nil {
 		return nil, nil, scerr.InvalidParameterError("req.Network", "cannot be nil")
 	}
-	gwname := req.Name
+
+	gwname := strings.Split(req.Name, ".")[0]   // req.Name may contain a FQDN...
 	if gwname == "" {
 		gwname = "gw-" + req.Network.Name
 	}
@@ -436,12 +438,15 @@ func (s *Stack) CreateGateway(req resources.GatewayRequest) (*resources.Host, *u
 	hostReq := resources.HostRequest{
 		ImageID:      req.ImageID,
 		KeyPair:      req.KeyPair,
+		HostName:     req.Name,
 		ResourceName: gwname,
 		TemplateID:   req.TemplateID,
 		Networks:     []*resources.Network{req.Network},
 		PublicIP:     true,
 	}
-
+	if sizing != nil && sizing.MinDiskSize > 0 {
+		hostReq.DiskSize = sizing.MinDiskSize
+	}
 	host, userData, err := s.CreateHost(hostReq)
 	if err != nil {
 		switch err.(type) {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
+# Copyright 2018, CS Systemes d'Information, http://www.c-s.fr
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,24 +14,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# install_docker.sh
-#
-# Installs Docker
+# vg_device_unmount.sh
+# Unmounts a LVM VG
 
----
-feature:
-    target:
-        host: yes
-        cluster:
-            master: all
-            node: all
+set -u -o pipefail
 
-    install:
-        yum:
-            package: mpich
+function print_error {
+    read line file <<<$(caller)
+    echo "An error occurred in line $line of file $file:" "{"`sed "${line}q;d" "$file"`"}" >&2
+}
+trap print_error ERR
 
-        apt:
-            package: mpich
-
-        dnf:
-            package: mpich
+sudo umount -l -f /dev/mapper/{{.Name}}VG-{{.Name}}
+sudo vgchange -an {{.Name}}VG
+sudo vgexport {{.Name}}VG

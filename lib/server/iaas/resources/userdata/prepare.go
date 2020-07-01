@@ -103,8 +103,8 @@ type Content struct {
 }
 
 var (
-	userdataPhase1Template atomic.Value //*template.Template
-	userdataPhase2Template atomic.Value //*template.Template
+	userdataPhase1Template atomic.Value // *template.Template
+	userdataPhase2Template atomic.Value // *template.Template
 )
 
 // NewContent ...
@@ -177,7 +177,7 @@ func (ud *Content) Prepare(
 	ud.PublicKey = strings.Trim(request.KeyPair.PublicKey, "\n")
 	ud.PrivateKey = strings.Trim(request.KeyPair.PrivateKey, "\n")
 	// ud.ConfIF = !autoHostNetworkInterfaces
-	ud.IsGateway = request.DefaultRouteIP == "" && request.Networks[0].Name != resources.SingleHostNetworkName && !useLayer3Networking
+	ud.IsGateway = request.DefaultRouteIP == "" && len(request.Networks) != 0 && request.Networks[0].Name != resources.SingleHostNetworkName && !useLayer3Networking
 	ud.AddGateway = !request.PublicIP && !useLayer3Networking && ip != "" && !useNATService
 	ud.DNSServers = dnsList
 	ud.CIDR = cidr
@@ -211,28 +211,27 @@ func (ud *Content) Generate(phase string) ([]byte, error) {
 	// DEV VAR
 	provider := ""
 	if suffixCandidate := os.Getenv("SAFESCALE_SCRIPT_FLAVOR"); suffixCandidate != "" {
-		if suffixCandidate != "" {
-			problems := false
+		problems := false
+		providerCandidate := fmt.Sprintf(".%s", suffixCandidate)
 
-			box, err = rice.FindBox("../userdata/scripts")
-			if err != nil || box == nil {
-				problems = true
+		box, err = rice.FindBox("../userdata/scripts")
+		if err != nil || box == nil {
+			problems = true
+		}
+
+		if !problems && box != nil {
+			_, err := box.String(fmt.Sprintf("userdata%s.phase1.sh", providerCandidate))
+			problems = err != nil
+			_, err = box.String(fmt.Sprintf("userdata%s.phase2.sh", providerCandidate))
+			problems = problems || (err != nil)
+
+			if !problems {
+				provider = providerCandidate
 			}
+		}
 
-			if !problems && box != nil {
-				_, err := box.String(fmt.Sprintf("userdata%s.phase1.sh", suffixCandidate))
-				problems = err != nil
-				_, err = box.String(fmt.Sprintf("userdata%s.phase2.sh", suffixCandidate))
-				problems = problems || (err != nil)
-
-				if !problems {
-					provider = fmt.Sprintf(".%s", suffixCandidate)
-				}
-			}
-
-			if problems {
-				logrus.Warnf("Ignoring script flavor [%s]", suffixCandidate)
-			}
+		if problems {
+			logrus.Warnf("Ignoring script flavor [%s]", suffixCandidate)
 		}
 	}
 

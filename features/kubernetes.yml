@@ -25,13 +25,6 @@ feature:
 
         # "clusterSizing" not honored currently
         clusterSizing:
-            dcos:
-                small:
-                    nodes: "count >= 2, cpu >= 2"   # 1 master, 1 node
-                normal:
-                    nodes: "count >= 4, cpu >= 2"   # 3 masters, 1 node
-                large:
-                    nodes: "count >= 6, cpu >= 2 "  # 3 masters, 3 nodes
             boh:
                 small:
                     masters: "count >= 1, cpu >= 2"
@@ -59,8 +52,8 @@ feature:
         - CNI=calico
         - Dashboard=true
         - Hardening=true
-        - KubeVersion=1.14.1
-        - HelmVersion=2.14.1
+        - KubeVersion=1.14.10
+        - HelmVersion=2.15.2
         - DisableHelm=false
         - HelmDefaultNamespace=default
         - ExternalLoadBalancerHostname=
@@ -71,95 +64,6 @@ feature:
         - ControlplaneEndpointIP
 
     install:
-        dcos:
-            check:
-                pace: deploy
-                steps:
-                    deploy:
-                        targets:
-                            masters: one
-                        run: |
-                            sfDcos kubernetes &>/dev/null
-                            sfExit
-
-            add:
-                #pace: package,cli+config
-                pace: package,cli,config
-                steps:
-                    package:
-                        targets:
-                            masters: one
-                        options:
-                            small: |
-                                {
-                                    "kubernetes": {
-                                        "node_count": 1,
-                                        "reserved_resources": {
-                                            "kube_cpus": 1,
-                                            "kube_mem": 1024,
-                                            "kube_disk": 512
-                                        }
-                                    }
-                                }
-                            normal: |
-                                {
-                                    "kubernetes": {
-                                        "high_availability": true,
-                                        "node_count": 1,
-                                        "reserved_resources": {
-                                            "kube_cpus": 1,
-                                            "kube_mem": 1024,
-                                            "kube_disk": 512
-                                        }
-                                    }
-                                }
-                            large: |
-                                {
-                                    "kubernetes": {
-                                        "high_availability": true,
-                                        "node_count": 3,
-                                        "reserved_resources": {
-                                            "kube_cpus": 1,
-                                            "kube_mem": 1024,
-                                            "kube_disk": 512
-                                        }
-                                    }
-                                }
-                        run: |
-                            op=-1
-                            output=$(sfDcos package install --yes kubernetes {{.options}} 2>&1) && op=$? || true
-                            [ $op -ne 0 ] && {
-                                echo $output
-                                echo $output | grep "already installed" &>/dev/null || sfFail $op
-                            }
-                            sfExit
-
-                    cli:
-                        targets:
-                            masters: all
-                        run: |
-                            sfDcos package install --yes kubernetes --cli
-                            sfExit
-
-                    config:
-                        targets:
-                            masters: all
-                        run: |
-                            sfRetry {{.TemplateLongOperationTimeout}} {{.TemplateOperationDelay}} sfDcos kubernetes plan show deploy --json | jq .status | grep COMPLETE &>/dev/null || sfFail 192
-                            sfDcos kubernetes kubeconfig --apiserver-url https://apiserver.kubernetes.l4lb.thisdcos.directory:6443 && \
-                            sfDcos config set-cluster kubernetes --server https://apiserver.kubernetes.l4lb.thisdcos.directory:6443
-                            sfExit
-
-            remove:
-                pace: package
-                steps:
-                    package:
-                        targets:
-                            masters: one
-                        run: |
-                            sfDcos package remove --yes kubernetes || sfFail 192
-                            sfExit
-
         bash:
             check:
                 pace: nodes,kube
@@ -216,7 +120,7 @@ feature:
                                     sfWaitForApt
                                     sfRetry {{.TemplateOperationTimeout}} {{.TemplateOperationDelay}} sfApt install -y ebtables socat || sfFail 192
                                     ;;
-                                redhat|centos)
+                                redhat|rhel|fedora|centos)
                                     sfRetry {{.TemplateOperationTimeout}} {{.TemplateOperationDelay}} yum install -y ebtables socat || sfFail 193
 
                                     cat >/etc/sysctl.d/kubernetes.conf <<-'EOF'
@@ -275,7 +179,7 @@ feature:
                                     sfRetry {{.TemplateOperationTimeout}} {{.TemplateOperationDelay}} sfApt install -y auditd quota quotatool || sfFail 195
                                     ;;
 
-                                centos|redhat)
+                                centos|fedora|redhat|rhel)
                                     sfRetry {{.TemplateOperationTimeout}} {{.TemplateOperationDelay}} yum -y install audit audit-libs quota || sfFail 195
                                     ;;
 
@@ -333,7 +237,7 @@ feature:
                                     apt-mark hold kubelet kubeadm kubectl
                                     ;;
 
-                                centos|redhat)
+                                centos|fedora|redhat|rhel)
                                     cat >/etc/yum.repos.d/kubernetes.repo <<-EOF
                             [kubernetes]
                             name=Kubernetes
@@ -344,6 +248,7 @@ feature:
                             gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
                             exclude=kube*
                             EOF
+
                             {{ if .KubeVersion }}
                                     yum -y install kubelet-{{.KubeVersion}} kubeadm-{{.KubeVersion}} kubectl-{{.KubeVersion}} --disableexcludes=kubernetes || sfFail 199
                             {{ else }}
@@ -369,7 +274,7 @@ feature:
                                 ubuntu|debian)
                                     sfApt update && sfApt -y install keepalived haproxy || sfFail 202
                                     ;;
-                                redhat|centos)
+                                redhat|rhel|centos|fedora)
                                     yum install -q -y keepalived haproxy || sfFail 202
                                     ;;
                                 *)
@@ -536,6 +441,9 @@ feature:
                             CP_ENDPOINT_IP={{ .HostIP }}
                             {{ end }}
 
+                            DNSDOMAIN=$(hostname -d)
+                            [ -z "${DNSDOMAIN}" ] && DNSDOMAIN=cluster.local
+
                             cat >/etc/kubernetes/kubeadm/kubeadm-config.yaml <<-EOF
                             ---
                             apiVersion: kubeadm.k8s.io/v1beta1
@@ -546,7 +454,7 @@ feature:
                                 local:
                                     dataDir: /var/lib/etcd
                             networking:
-                                dnsDomain: cluster.local
+                                dnsDomain: ${DNSDOMAIN}
                                 podSubnet: 10.244.0.0/16
                                 serviceSubnet: 10.96.0.0/12
                             {{ if eq .Hardening "true" }}
@@ -604,6 +512,10 @@ feature:
                             oidc-username-claim: "{{ .OIDCUserName }}"
                             oidc-groups-claim: "{{ .OIDCGroupName }}"
                             {{ end }}
+                            ---
+                            apiVersion: kubeproxy.config.k8s.io/v1alpha1
+                            kind: KubeProxyConfiguration
+                            metricsBindAddress: 0.0.0.0:10249
                             EOF
 
                             sfRetry {{.TemplatePullImagesTimeout}} {{.TemplateOperationDelay}} kubeadm config images pull || sfFail 202
@@ -847,7 +759,7 @@ feature:
                                             sfApt update && sfApt install -y patch || sfFail 221
                                             ;;
 
-                                        centos|redhat)
+                                        centos|fedora|redhat|rhel)
                                             yum -y install patch || sfFail 222
                                             ;;
 
@@ -1011,7 +923,7 @@ feature:
                                 debian|ubuntu)
                                     sfApt purge -y kubectl kubeadm kubelet || sfFail 223 "failure purging kubernetes"
                                     ;;
-                                redhat|centos)
+                                redhat|rhel|fedora|centos)
                                     yum remove -y kubectl kubeadm kubelet || sfFail 224 "failure purging kubernetes"
                                     ;;
                             esac

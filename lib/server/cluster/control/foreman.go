@@ -44,6 +44,8 @@ import (
 	"github.com/CS-SI/SafeScale/lib/server/cluster/enums/property"
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
+	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/hostproperty"
+	propsv1 "github.com/CS-SI/SafeScale/lib/server/iaas/resources/properties/v1"
 	"github.com/CS-SI/SafeScale/lib/server/install"
 	providermetadata "github.com/CS-SI/SafeScale/lib/server/metadata"
 	srvutils "github.com/CS-SI/SafeScale/lib/server/utils"
@@ -79,11 +81,11 @@ var (
 
 // Makers ...
 type Makers struct {
-	MinimumRequiredServers      func(task concurrency.Task, b Foreman) (int, int, int)   // returns masterCount, pruvateNodeCount, publicNodeCount
-	DefaultGatewaySizing        func(task concurrency.Task, b Foreman) pb.HostDefinition // sizing of Gateway(s)
-	DefaultMasterSizing         func(task concurrency.Task, b Foreman) pb.HostDefinition // default sizing of master(s)
-	DefaultNodeSizing           func(task concurrency.Task, b Foreman) pb.HostDefinition // default sizing of node(s)
-	DefaultImage                func(task concurrency.Task, b Foreman) string            // default image of server(s)
+	MinimumRequiredServers      func(task concurrency.Task, b Foreman) (int, int, int)    // returns masterCount, pruvateNodeCount, publicNodeCount
+	DefaultGatewaySizing        func(task concurrency.Task, b Foreman) *pb.HostDefinition // sizing of Gateway(s)
+	DefaultMasterSizing         func(task concurrency.Task, b Foreman) *pb.HostDefinition // default sizing of master(s)
+	DefaultNodeSizing           func(task concurrency.Task, b Foreman) *pb.HostDefinition // default sizing of node(s)
+	DefaultImage                func(task concurrency.Task, b Foreman) string             // default image of server(s)
 	GetNodeInstallationScript   func(task concurrency.Task, b Foreman, nodeType nodetype.Enum) (string, map[string]interface{})
 	GetGlobalSystemRequirements func(task concurrency.Task, f Foreman) (string, error)
 	GetTemplateBox              func() (*rice.Box, error)
@@ -181,7 +183,7 @@ func (b *foreman) construct(task concurrency.Task, req Request) (err error) {
 		if err != nil {
 			state = clusterstate.Error
 		} else {
-			state = clusterstate.Created
+			state = clusterstate.Nominal
 		}
 
 		metaErr := b.cluster.UpdateMetadata(task, func() error {
@@ -236,7 +238,7 @@ func (b *foreman) construct(task concurrency.Task, req Request) (err error) {
 		}
 	}
 	gatewaysDefault.ImageId = imageID
-	gatewaysDef := complementHostDefinition(req.GatewaysDef, *gatewaysDefault)
+	gatewaysDef := complementHostDefinition(req.GatewaysDef, gatewaysDefault)
 
 	// Determine master sizing
 	var mastersDefault *pb.HostDefinition
@@ -256,7 +258,7 @@ func (b *foreman) construct(task concurrency.Task, req Request) (err error) {
 	}
 	// Note: no way yet to define master sizing from cli...
 	mastersDefault.ImageId = imageID
-	mastersDef := complementHostDefinition(req.MastersDef, *mastersDefault)
+	mastersDef := complementHostDefinition(req.MastersDef, mastersDefault)
 
 	// Determine node sizing
 	var nodesDefault *pb.HostDefinition
@@ -275,7 +277,7 @@ func (b *foreman) construct(task concurrency.Task, req Request) (err error) {
 		}
 	}
 	nodesDefault.ImageId = imageID
-	nodesDef := complementHostDefinition(req.NodesDef, *nodesDefault)
+	nodesDef := complementHostDefinition(req.NodesDef, nodesDefault)
 
 	// Initialize service to use
 	clientInstance := client.New()
@@ -302,15 +304,16 @@ func (b *foreman) construct(task concurrency.Task, req Request) (err error) {
 	logrus.Debugf("[cluster %s] creating network 'net-%s'", req.Name, req.Name)
 	req.Name = strings.ToLower(req.Name)
 	networkName := "net-" + req.Name
-	sizing := srvutils.FromPBHostDefinitionToPBGatewayDefinition(*gatewaysDef)
+	sizing := srvutils.FromPBHostDefinitionToPBGatewayDefinition(gatewaysDef)
 	def := pb.NetworkDefinition{
 		Name:     networkName,
 		Cidr:     req.CIDR,
-		Gateway:  &sizing,
+		Gateway:  sizing,
 		FailOver: !gwFailoverDisabled,
+		Domain:   req.Domain,
 	}
 	clientNetwork := clientInstance.Network
-	network, err := clientNetwork.Create(def, temporal.GetExecutionTimeout())
+	network, err := clientNetwork.Create(&def, temporal.GetExecutionTimeout())
 	if err != nil {
 		return err
 	}
@@ -398,9 +401,9 @@ func (b *foreman) construct(task concurrency.Task, req Request) (err error) {
 	err = b.cluster.UpdateMetadata(task, func() error {
 		err := b.cluster.GetProperties(task).LockForWrite(property.DefaultsV2).ThenUse(func(clonable data.Clonable) error {
 			defaultsV2 := clonable.(*clusterpropsv2.Defaults)
-			defaultsV2.GatewaySizing = srvutils.FromPBHostSizing(*gatewaysDef.Sizing)
-			defaultsV2.MasterSizing = srvutils.FromPBHostSizing(*mastersDef.Sizing)
-			defaultsV2.NodeSizing = srvutils.FromPBHostSizing(*nodesDef.Sizing)
+			defaultsV2.GatewaySizing = srvutils.FromPBHostSizing(gatewaysDef.Sizing)
+			defaultsV2.MasterSizing = srvutils.FromPBHostSizing(mastersDef.Sizing)
+			defaultsV2.NodeSizing = srvutils.FromPBHostSizing(nodesDef.Sizing)
 			defaultsV2.Image = imageID
 			return nil
 		})
@@ -515,9 +518,9 @@ func (b *foreman) construct(task concurrency.Task, req Request) (err error) {
 		return err
 	}
 
-	// FIXME What about cleanup ?, unit test Task class
+	// FIXME: What about cleanup ?, unit test Task class
 
-	// Step 2: awaits gateway installation end and masters installation end
+	// Step 2: waits for gateway installation end and masters installation end
 	_, primaryGatewayStatus = primaryGatewayTask.Wait()
 	if primaryGatewayStatus != nil {
 		_ = mastersTask.Abort() // FIXME Handle aborts
@@ -674,17 +677,31 @@ func (b *foreman) destruct(task concurrency.Task) (err error) {
 
 	var cleaningErrors []error
 
-	// Deletes the nodes
-	list := cluster.ListNodeIDs(task)
-	length := len(list)
-	if length > 0 {
+	// check if nodes and/or masters have volumes attached (which would forbid the deletion)
+	nodeList := cluster.ListNodeIDs(task)
+	nodeLength := len(nodeList)
+	if nodeLength > 0 {
+		if err := checkForAttachedVolumes(task, cluster, nodeList, "node"); err != nil {
+			return err
+		}
+	}
+	masterList := cluster.ListMasterIDs(task)
+	masterLength := len(masterList)
+	if masterLength > 0 {
+		if err := checkForAttachedVolumes(task, cluster, masterList, "master"); err != nil {
+			return err
+		}
+	}
+
+	// No volumes attached, delete nodes
+	if nodeLength > 0 {
 		var subtasks []concurrency.Task
-		for i := 0; i < length; i++ {
+		for i := 0; i < nodeLength; i++ {
 			subtask, err := task.New()
 			if err != nil {
 				return err
 			}
-			subtask, err = subtask.Start(b.taskDeleteNode, list[i])
+			subtask, err = subtask.Start(b.taskDeleteNode, nodeList[i])
 			if err != nil {
 				return err
 			}
@@ -698,18 +715,16 @@ func (b *foreman) destruct(task concurrency.Task) (err error) {
 		}
 	}
 
-	// Delete the Masters
-	list = cluster.ListMasterIDs(task)
-	length = len(list)
-	if len(list) > 0 {
+	// delete the Masters
+	if masterLength > 0 {
 		var subtasks []concurrency.Task
-		for i := 0; i < length; i++ {
+		for i := 0; i < masterLength; i++ {
 			subtask, err := task.New()
 			if err != nil {
 				return err
 			}
 
-			subtask, err = subtask.Start(deleteMasterFunc, list[i])
+			subtask, err = subtask.Start(deleteMasterFunc, masterList[i])
 			if err != nil {
 				return err
 			}
@@ -768,75 +783,115 @@ func (b *foreman) destruct(task concurrency.Task) (err error) {
 	return scerr.ErrListError(cleaningErrors)
 }
 
+func checkForAttachedVolumes(task concurrency.Task, cluster *Controller, list []string, what string) error {
+	// Check first if there are volumes attached to nodes
+	length := len(list)
+	svc := cluster.GetService(task)
+
+	for i := 0; i < length; i++ {
+		mh, err := providermetadata.LoadHost(svc, list[i])
+		if err != nil {
+			switch err.(type) {
+			case scerr.ErrNotFound:
+				continue
+			default:
+				return err
+			}
+		}
+		host, err := mh.Get()
+		if err != nil {
+			return err
+		}
+		err = host.Properties.LockForRead(hostproperty.VolumesV1).ThenUse(func(clonable data.Clonable) error {
+			nAttached := len(clonable.(*propsv1.HostVolumes).VolumesByID)
+			if nAttached > 0 {
+				return fmt.Errorf("host has %d volume%s attached", nAttached, utils.Plural(nAttached))
+			}
+			return nil
+		})
+		if err != nil {
+			return scerr.InvalidRequestError(fmt.Sprintf("cannot delete %s '%s' because of attached volumes: %v", what, host.Name, err))
+		}
+	}
+	return nil
+}
+
 func (b *foreman) taskDeleteNode(task concurrency.Task, params concurrency.TaskParameters) (concurrency.TaskResult, error) {
 	funcErr := b.cluster.DeleteSpecificNode(task, params.(string), "")
 	return nil, funcErr
 }
 
 // complementHostDefinition complements req with default values if needed
-func complementHostDefinition(req *pb.HostDefinition, def pb.HostDefinition) *pb.HostDefinition {
-	var finalDef pb.HostDefinition
+func complementHostDefinition(req *pb.HostDefinition, def *pb.HostDefinition) *pb.HostDefinition {
 	if req == nil {
-		finalDef = def
-	} else {
-		finalDef = *req
-		if finalDef.Sizing == nil {
-			*finalDef.Sizing = *(def.Sizing)
-		} else {
-			finalDef.Sizing = &pb.HostSizing{GpuCount: -1}
-			*finalDef.Sizing = *(req.Sizing)
-
-			if def.Sizing.MinCpuCount > 0 && finalDef.Sizing.MinCpuCount == 0 {
-				finalDef.Sizing.MinCpuCount = def.Sizing.MinCpuCount
-			}
-			if def.Sizing.MaxCpuCount > 0 && finalDef.Sizing.MaxCpuCount == 0 {
-				finalDef.Sizing.MaxCpuCount = def.Sizing.MaxCpuCount
-			}
-			if def.Sizing.MinRamSize > 0.0 && finalDef.Sizing.MinRamSize == 0.0 {
-				finalDef.Sizing.MinRamSize = def.Sizing.MinRamSize
-			}
-			if def.Sizing.MaxRamSize > 0.0 && finalDef.Sizing.MaxRamSize == 0.0 {
-				finalDef.Sizing.MaxRamSize = def.Sizing.MaxRamSize
-			}
-			if def.Sizing.MinDiskSize > 0 && finalDef.Sizing.MinDiskSize == 0 {
-				finalDef.Sizing.MinDiskSize = def.Sizing.MinDiskSize
-			}
-			if finalDef.Sizing.GpuCount <= 0 && def.Sizing.GpuCount > 0 {
-				finalDef.Sizing.GpuCount = def.Sizing.GpuCount
-			}
-			if finalDef.Sizing.MinCpuFreq == 0 && def.Sizing.MinCpuFreq > 0 {
-				finalDef.Sizing.MinCpuFreq = def.Sizing.MinCpuFreq
-			}
-			if finalDef.ImageId == "" {
-				finalDef.ImageId = def.ImageId
-			}
-
-			if finalDef.Sizing.MinCpuCount <= 0 {
-				finalDef.Sizing.MinCpuCount = 2
-			}
-			if finalDef.Sizing.MaxCpuCount <= 0 {
-				finalDef.Sizing.MaxCpuCount = 4
-			}
-			if finalDef.Sizing.MinRamSize <= 0.0 {
-				finalDef.Sizing.MinRamSize = 7.0
-			}
-			if finalDef.Sizing.MaxRamSize <= 0.0 {
-				finalDef.Sizing.MaxRamSize = 16.0
-			}
-			if finalDef.Sizing.MinDiskSize <= 0 {
-				finalDef.Sizing.MinDiskSize = 50
-			}
-		}
+		return def
 	}
-	return &finalDef
+
+	//finalDef := srvutils.ClonePBHostDefinition(req)
+	finalDef := req.Clone()
+	if finalDef.Sizing == nil {
+		finalDef.Sizing = srvutils.ClonePBHostSizing(def.Sizing)
+		return finalDef
+	}
+
+	if def.Sizing.MinCpuCount > 0 && finalDef.Sizing.MinCpuCount == 0 {
+		finalDef.Sizing.MinCpuCount = def.Sizing.MinCpuCount
+	}
+	if def.Sizing.MaxCpuCount > 0 && finalDef.Sizing.MaxCpuCount == 0 {
+		finalDef.Sizing.MaxCpuCount = def.Sizing.MaxCpuCount
+	}
+	if def.Sizing.MinRamSize > 0.0 && finalDef.Sizing.MinRamSize == 0.0 {
+		finalDef.Sizing.MinRamSize = def.Sizing.MinRamSize
+	}
+	if def.Sizing.MaxRamSize > 0.0 && finalDef.Sizing.MaxRamSize == 0.0 {
+		finalDef.Sizing.MaxRamSize = def.Sizing.MaxRamSize
+	}
+	if def.Sizing.MinDiskSize > 0 && finalDef.Sizing.MinDiskSize == 0 {
+		finalDef.Sizing.MinDiskSize = def.Sizing.MinDiskSize
+	}
+	if finalDef.Sizing.GpuCount <= 0 && def.Sizing.GpuCount > 0 {
+		finalDef.Sizing.GpuCount = def.Sizing.GpuCount
+	}
+	if finalDef.Sizing.MinCpuFreq == 0 && def.Sizing.MinCpuFreq > 0 {
+		finalDef.Sizing.MinCpuFreq = def.Sizing.MinCpuFreq
+	}
+	if finalDef.ImageId == "" {
+		finalDef.ImageId = def.ImageId
+	}
+
+	if finalDef.Sizing.MinCpuCount <= 0 {
+		finalDef.Sizing.MinCpuCount = 2
+	}
+	if finalDef.Sizing.MaxCpuCount <= 0 {
+		finalDef.Sizing.MaxCpuCount = 4
+	}
+	if finalDef.Sizing.MinRamSize <= 0.0 {
+		finalDef.Sizing.MinRamSize = 7.0
+	}
+	if finalDef.Sizing.MaxRamSize <= 0.0 {
+		finalDef.Sizing.MaxRamSize = 16.0
+	}
+	if finalDef.Sizing.MinDiskSize <= 0 {
+		finalDef.Sizing.MinDiskSize = 50
+	}
+	return finalDef
 }
 
-// GetState returns "actively" the current state of the cluster
+// GetState returns "actively" (if active state is proposed by maker) the current state of the cluster
 func (b *foreman) getState(task concurrency.Task) (clusterstate.Enum, error) {
 	if b.makers.GetState != nil {
 		return b.makers.GetState(task, b)
 	}
-	return clusterstate.Unknown, fmt.Errorf("no maker defined for 'GetState'")
+
+	var stateV1 clusterstate.Enum
+	err := b.cluster.GetProperties(task).LockForRead(property.StateV1).ThenUse(func(clonable data.Clonable) error {
+		stateV1 = clonable.(*clusterpropsv1.State).State
+		return nil
+	})
+	if err != nil{
+		return clusterstate.Unknown, err
+	}
+	return stateV1, nil
 }
 
 // configureNode ...
@@ -946,6 +1001,14 @@ func (b *foreman) configureCluster(task concurrency.Task, params concurrency.Tas
 		}
 	}
 
+	// Installs ansible feature on cluster (all masters)
+	if _, ok := req.DisabledDefaultFeatures["ansible"]; !ok {
+		err = b.installAnsible(task)
+		if err != nil {
+			return err
+		}
+	}
+
 	// Installs remotedesktop feature on cluster (all masters)
 	if _, ok := req.DisabledDefaultFeatures["remotedesktop"]; !ok {
 		err = b.installRemoteDesktop(task)
@@ -953,8 +1016,8 @@ func (b *foreman) configureCluster(task concurrency.Task, params concurrency.Tas
 			return err
 		}
 	}
-	// Not finding a callback isn't an error, so return nil in this case
 	return nil
+
 }
 
 func (b *foreman) determineRequiredNodes(task concurrency.Task) (int, int, int) {
@@ -1664,6 +1727,8 @@ func (b *foreman) taskCreateMasters(t concurrency.Task, params concurrency.TaskP
 	defer tracer.OnExitTrace()()
 	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
+	def.KeepOnFailure = !nokeep
+
 	clusterName := b.cluster.GetIdentity(t).Name
 
 	if count <= 0 {
@@ -1721,6 +1786,8 @@ func (b *foreman) taskCreateMaster(t concurrency.Task, params concurrency.TaskPa
 	defer tracer.OnExitTrace()()
 	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
+	def.KeepOnFailure = !nokeep
+
 	hostLabel := fmt.Sprintf("master #%d", index)
 	logrus.Debugf("[%s] starting host resource creation...", hostLabel)
 
@@ -1729,7 +1796,8 @@ func (b *foreman) taskCreateMaster(t concurrency.Task, params concurrency.TaskPa
 		return nil, err
 	}
 
-	hostDef := *def
+	//hostDef := srvutils.ClonePBHostDefinition(def)
+	hostDef := def.Clone()
 	hostDef.Name, err = b.buildHostname(t, "master", nodetype.Master)
 	if err != nil {
 		return nil, err
@@ -1942,6 +2010,8 @@ func (b *foreman) taskCreateNodes(t concurrency.Task, params concurrency.TaskPar
 	defer tracer.OnExitTrace()()
 	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
+	def.KeepOnFailure = !nokeep
+
 	clusterName := b.cluster.GetIdentity(t).Name
 
 	if count <= 0 {
@@ -2026,6 +2096,8 @@ func (b *foreman) taskCreateNode(t concurrency.Task, params concurrency.TaskPara
 	defer tracer.OnExitTrace()()
 	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
+	def.KeepOnFailure = !nokeep
+
 	hostLabel := fmt.Sprintf("node #%d", index)
 	logrus.Debugf("[%s] starting host resource creation...", hostLabel)
 
@@ -2035,7 +2107,8 @@ func (b *foreman) taskCreateNode(t concurrency.Task, params concurrency.TaskPara
 	}
 
 	// Create the host
-	hostDef := *def
+	//hostDef := srvutils.ClonePBHostDefinition(def)
+	hostDef := def.Clone()
 	hostDef.Name, err = b.buildHostname(t, "node", nodetype.Node)
 	if err != nil {
 		return nil, err
@@ -2317,6 +2390,39 @@ func (b *foreman) installRemoteDesktop(task concurrency.Task) (err error) {
 		"Username": "cladm",
 		"Password": adminPassword,
 	}, install.Settings{})
+	if err != nil {
+		return err
+	}
+	if !results.Successful() {
+		msg := results.AllErrorMessages()
+		return fmt.Errorf("[cluster %s] failed to add '%s' failed: %s", clusterName, feat.DisplayName(), msg)
+	}
+	logrus.Debugf("[cluster %s] feature '%s' added successfully", clusterName, feat.DisplayName())
+	return nil
+}
+
+// installAnsible installs feature ansible on all masters of the cluster
+func (b *foreman) installAnsible(task concurrency.Task) (err error) {
+	identity := b.cluster.GetIdentity(task)
+	clusterName := identity.Name
+
+	tracer := concurrency.NewTracer(task, "", true).WithStopwatch().GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	logrus.Debugf("[cluster %s] adding feature 'ansible'", clusterName)
+
+	target, err := install.NewClusterTarget(task, b.cluster)
+	if err != nil {
+		return err
+	}
+
+	// Adds ansible
+	feat, err := install.NewEmbeddedFeature(task, "ansible")
+	if err != nil {
+		return err
+	}
+	results, err := feat.Add(target, install.Variables{}, install.Settings{})
 	if err != nil {
 		return err
 	}

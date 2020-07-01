@@ -21,7 +21,6 @@ import (
 	"net"
 	"strings"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/pengux/check"
 	log "github.com/sirupsen/logrus"
 
@@ -303,7 +302,6 @@ func (s *Stack) GetNetworkByName(name string) (*resources.Network, error) {
 func (s *Stack) GetNetwork(id string) (*resources.Network, error) {
 	subnet, err := s.getSubnet(id)
 	if err != nil {
-		spew.Dump(err) // FIXME Remove spew.Dump
 		if !strings.Contains(err.Error(), id) {
 			return nil, scerr.Errorf(fmt.Sprintf("failed getting network id '%s': %s", id, openstack.ProviderErrorToString(err)), err)
 		}
@@ -627,7 +625,7 @@ func fromIntIPVersion(v int) ipversion.Enum {
 // CreateGateway creates a gateway for a network.
 // By current implementation, only one gateway can exist by Network because the object is intended
 // to contain only one hostID
-func (s *Stack) CreateGateway(req resources.GatewayRequest) (*resources.Host, *userdata.Content, error) {
+func (s *Stack) CreateGateway(req resources.GatewayRequest, sizing *resources.SizingRequirements) (*resources.Host, *userdata.Content, error) {
 	if s == nil {
 		return nil, nil, scerr.InvalidInstanceError()
 	}
@@ -635,7 +633,7 @@ func (s *Stack) CreateGateway(req resources.GatewayRequest) (*resources.Host, *u
 		return nil, nil, scerr.InvalidParameterError("req.Network", "cannot be nil")
 	}
 
-	gwname := req.Name
+	gwname := strings.Split(req.Name, ".")[0]   // req.Name may contain a FQDN...
 	if gwname == "" {
 		gwname = "gw-" + req.Network.Name
 	}
@@ -646,10 +644,14 @@ func (s *Stack) CreateGateway(req resources.GatewayRequest) (*resources.Host, *u
 	hostReq := resources.HostRequest{
 		ImageID:      req.ImageID,
 		KeyPair:      req.KeyPair,
+		HostName:     req.Name,
 		ResourceName: gwname,
 		TemplateID:   req.TemplateID,
 		Networks:     []*resources.Network{req.Network},
 		PublicIP:     true,
+	}
+	if sizing != nil && sizing.MinDiskSize > 0 {
+		hostReq.DiskSize = sizing.MinDiskSize
 	}
 	host, userData, err := s.CreateHost(hostReq)
 	if err != nil {

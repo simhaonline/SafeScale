@@ -79,10 +79,10 @@ type Feature struct {
 	// Installers defines the installers available for the feature
 	installers map[method.Enum]Installer
 	// Dependencies lists other feature(s) (by name) needed by this one
-	//dependencies []string
+	// dependencies []string
 	// Management contains a string map of data that could be used to manage the feature (if it makes sense)
 	// This could be used to explain to Service object how to manage the feature, to react as a service
-	//Management map[string]interface{}
+	// Management map[string]interface{}
 	// specs is the Viper instance containing feature specification
 	specs *viper.Viper
 	task  concurrency.Task
@@ -533,10 +533,11 @@ func (f *Feature) setImplicitParameters(t Target, v Variables) error {
 		v["DefaultRouteIP"] = networkCfg.DefaultRouteIP
 		v["GatewayIP"] = v["DefaultRouteIP"] // legacy ...
 		v["PrimaryPublicIP"] = networkCfg.PrimaryPublicIP
-		if networkCfg.SecondaryGatewayIP != "" {
+		v["NetworkUsesVIP"] = networkCfg.SecondaryGatewayIP != ""
+		if v["NetworkUsesVIP"].(bool) {
 			v["SecondaryGatewayIP"] = networkCfg.SecondaryGatewayIP
+			v["SecondaryPublicIP"] = networkCfg.SecondaryPublicIP
 		}
-		v["SecondaryPublicIP"] = networkCfg.SecondaryPublicIP
 		v["EndpointIP"] = networkCfg.EndpointIP
 		v["PublicIP"] = v["EndpointIP"] // legacy ...
 		if _, ok := v["CIDR"]; !ok {
@@ -550,11 +551,10 @@ func (f *Feature) setImplicitParameters(t Target, v Variables) error {
 		if err != nil {
 			return err
 		}
-		if controlPlaneV1.VirtualIP != nil && controlPlaneV1.VirtualIP.PrivateIP != "" {
-			v["ControlplaneUsesVIP"] = true
+		v["ControlplaneUsesVIP"] = controlPlaneV1.VirtualIP != nil && controlPlaneV1.VirtualIP.PrivateIP != ""
+		if v["ControlplaneUsesVIP"].(bool) {
 			v["ControlplaneEndpointIP"] = controlPlaneV1.VirtualIP.PrivateIP
 		} else {
-			// Don't set ControlplaneUsesVIP if there is no VIP...
 			master, err := cluster.FindAvailableMaster(f.task)
 			if err != nil {
 				return err

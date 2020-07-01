@@ -54,7 +54,7 @@ import (
 
 // NetworkAPI defines API to manage networks
 type NetworkAPI interface {
-	Create(context.Context, string, string, ipversion.Enum, resources.SizingRequirements, string, string, bool) (*resources.Network, error)
+	Create(context.Context, string, string, ipversion.Enum, resources.SizingRequirements, string, string, bool, string) (*resources.Network, error)
 	List(context.Context, bool) ([]*resources.Network, error)
 	Inspect(context.Context, string) (*resources.Network, error)
 	Delete(context.Context, string) error
@@ -79,7 +79,7 @@ func (handler *NetworkHandler) Create(
 	ctx context.Context,
 	name string, cidr string, ipVersion ipversion.Enum,
 	sizing resources.SizingRequirements, theos string, gwname string,
-	failover bool,
+	failover bool, domain string,
 ) (network *resources.Network, err error) {
 
 	if handler == nil {
@@ -129,6 +129,7 @@ func (handler *NetworkHandler) Create(
 		Name:      name,
 		IPVersion: ipVersion,
 		CIDR:      cidr,
+		Domain:    domain,
 	})
 	if err != nil {
 		switch err.(type) {
@@ -138,6 +139,7 @@ func (handler *NetworkHandler) Create(
 			return nil, err
 		}
 	}
+	network.Domain = domain
 
 	newNetwork := network
 	// Starting from here, delete network if exiting with error
@@ -163,7 +165,7 @@ func (handler *NetworkHandler) Create(
 	caps := handler.service.GetCapabilities()
 	if failover && caps.PrivateVirtualIP {
 		logrus.Infof("Provider support private Virtual IP, honoring the failover setup for gateways.")
-	} else {
+	} else if failover && !caps.PrivateVirtualIP {
 		logrus.Warningf("Provider doesn't support private Virtual IP, cannot set up high availability of network default route.")
 		failover = false
 	}
@@ -261,6 +263,11 @@ func (handler *NetworkHandler) Create(
 		secondaryGatewayName = "gw2-" + network.Name
 	}
 
+	domain = strings.Trim(domain, ".")
+	if domain != "" {
+		domain = "." + domain
+	}
+
 	gwRequest := resources.GatewayRequest{
 		ImageID: img.ID,
 		Network: network,
@@ -280,11 +287,14 @@ func (handler *NetworkHandler) Create(
 
 	// Starts primary gateway creation
 	primaryRequest := gwRequest
-	primaryRequest.Name = primaryGatewayName
+	primaryRequest.Name = primaryGatewayName + domain
 	keypair, err := handler.service.CreateKeyPair("kp_" + primaryGatewayName)
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		_ = handler.service.DeleteKeyPair("kp_" + primaryGatewayName)
+	}()
 	primaryRequest.KeyPair = keypair
 	primaryTask, err := concurrency.NewTaskWithContext(ctx)
 	if err != nil {
@@ -302,11 +312,14 @@ func (handler *NetworkHandler) Create(
 	// Starts secondary gateway creation if asked for
 	if failover {
 		secondaryRequest := gwRequest
-		secondaryRequest.Name = secondaryGatewayName
+		secondaryRequest.Name = secondaryGatewayName + domain
 		keypair, err = handler.service.CreateKeyPair("kp_" + secondaryGatewayName)
 		if err != nil {
 			return nil, err
 		}
+		defer func() {
+			_ = handler.service.DeleteKeyPair("kp_" + secondaryGatewayName)
+		}()
 		secondaryRequest.KeyPair = keypair
 		secondaryTask, err = concurrency.NewTaskWithContext(ctx)
 		if err != nil {
@@ -326,6 +339,9 @@ func (handler *NetworkHandler) Create(
 	if primaryErr == nil {
 		primaryGateway = primaryResult.(data.Map)["host"].(*resources.Host)
 		primaryUserdata = primaryResult.(data.Map)["userdata"].(*userdata.Content)
+		if domain != "" {
+			primaryUserdata.HostName = primaryGatewayName + domain
+		}
 		primaryMetadata = primaryResult.(data.Map)["metadata"].(*metadata.Gateway)
 
 		// Starting from here, deletes the primary gateway if exiting with error
@@ -361,6 +377,9 @@ func (handler *NetworkHandler) Create(
 		if secondaryErr == nil {
 			secondaryGateway = secondaryResult.(data.Map)["host"].(*resources.Host)
 			secondaryUserdata = secondaryResult.(data.Map)["userdata"].(*userdata.Content)
+			if domain != "" {
+				secondaryUserdata.HostName = secondaryGatewayName + domain
+			}
 			secondaryMetadata = secondaryResult.(data.Map)["metadata"].(*metadata.Gateway)
 
 			// Starting from here, deletes the secondary gateway if exiting with error
@@ -517,7 +536,7 @@ func (handler *NetworkHandler) createGateway(t concurrency.Task, params concurre
 	primary := inputs["primary"].(bool)
 
 	logrus.Infof("Requesting the creation of gateway '%s' using template '%s' with image '%s'", request.Name, request.TemplateID, request.ImageID)
-	gw, userData, err := handler.service.CreateGateway(request)
+	gw, userData, err := handler.service.CreateGateway(request, &sizing)
 	if err != nil {
 		switch err.(type) {
 		case scerr.ErrNotFound, scerr.ErrTimeout:
@@ -561,8 +580,8 @@ func (handler *NetworkHandler) createGateway(t concurrency.Task, params concurre
 		}
 	}
 
-	// Binds gateway to VIP
-	if request.Network.VIP != nil {
+	// Binds gateway to VIP if primary
+	if primary && request.Network.VIP != nil {
 		err = handler.service.BindHostToVIP(request.Network.VIP, gw.ID)
 		if err != nil {
 			return nil, err
@@ -628,6 +647,11 @@ func (handler *NetworkHandler) waitForInstallPhase1OnGateway(
 			return nil, err
 		}
 		if client.IsProvisioningError(err) {
+			host, err := handler.service.GetHostByName(gw.Name)
+			if err != nil {
+				retrieveForensicsData(task.GetContext(), sshHandler, host)
+			}
+
 			return nil, fmt.Errorf("error creating network: Failure waiting for gateway '%s' to finish provisioning and being accessible through SSH: [%+v]", gw.Name, err)
 		}
 		return nil, err
@@ -698,7 +722,7 @@ func (handler *NetworkHandler) installPhase2OnGateway(task concurrency.Task, par
 		return nil, err
 	}
 	if returnCode != 0 {
-		logrus.Warnf("Unexpected problem rebooting...")
+		logrus.Warnf("Unexpected problem rebooting (retcode=%d)", returnCode)
 	}
 
 	ssh, err := sshHandler.GetConfig(task.GetContext(), gw.ID)

@@ -18,21 +18,21 @@ package metadata
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 
-	"github.com/CS-SI/SafeScale/lib/utils/scerr"
-
-	log "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/objectstorage"
 	"github.com/CS-SI/SafeScale/lib/utils/crypt"
+	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 )
 
 // Folder describes a metadata folder
 type Folder struct {
-	//path contains the base path where to read/write record in Object Storage
+	// path contains the base path where to read/write record in Object Storage
 	path     string
 	service  iaas.Service
 	crypt    bool
@@ -183,17 +183,22 @@ func (f *Folder) Write(path string, name string, content []byte) error {
 
 // Browse browses the content of a specific path in Metadata and executes 'cb' on each entry
 func (f *Folder) Browse(path string, callback FolderDecoderCallback) error {
-	list, err := f.service.GetMetadataBucket().List(f.absolutePath(path), objectstorage.NoPrefix)
+ 	list, err := f.service.GetMetadataBucket().List(f.absolutePath(path), objectstorage.NoPrefix)
 	if err != nil {
-		log.Errorf("Error browsing metadata: listing objects: %+v", err)
+		logrus.Errorf("Error browsing metadata: listing objects: %+v", err)
 		return err
+	}
+
+	// Special case where there is only an empty folder...
+	if len(list) == 1 && list[0] == f.absolutePath(path) {
+		return nil
 	}
 
 	for _, i := range list {
 		var buffer bytes.Buffer
 		_, err = f.service.GetMetadataBucket().ReadObject(i, &buffer, 0, 0)
 		if err != nil {
-			log.Errorf("Error browsing metadata: reading from buffer: %+v", err)
+			logrus.Errorf("Error browsing metadata: reading from buffer: %+v", err)
 			return err
 		}
 		data := buffer.Bytes()
@@ -205,7 +210,10 @@ func (f *Folder) Browse(path string, callback FolderDecoderCallback) error {
 		}
 		err = callback(data)
 		if err != nil {
-			log.Errorf("Error browsing metadata: running callback: %+v", err)
+			if _, ok := err.(*json.SyntaxError); ok && strings.Contains(err.Error(), "invalid character") {
+				err = scerr.SyntaxError(fmt.Sprintf("seems metadata '%s' is encrypted but not encryption key provided", i))
+			}
+			logrus.Errorf("Error browsing metadata: running callback: %+v", err)
 			return err
 		}
 	}

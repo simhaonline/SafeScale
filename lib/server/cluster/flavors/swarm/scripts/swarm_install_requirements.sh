@@ -68,8 +68,8 @@ EOF
 export -f install_common_requirements
 
 case $LINUX_KIND in
-    centos|redhat)
-        yum makecache fast
+    centos|fedora|redhat|rhel)
+        sfRetry 3m 5 "yum makecache"
         yum install -y curl wget time jq rclone unzip
         ;;
     debian|ubuntu)

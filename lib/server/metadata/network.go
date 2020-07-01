@@ -42,7 +42,7 @@ const (
 // Network links Object Storage folder and Network resource
 type Network struct {
 	item *metadata.Item
-	//inside *metadata.Folder
+	// inside *metadata.Folder
 	name *string
 	id   *string
 }
@@ -94,7 +94,7 @@ func (m *Network) Carry(network *resources.Network) (*Network, error) {
 	m.item.Carry(network)
 	m.id = &network.ID
 	m.name = &network.Name
-	//m.inside = metadata.NewFolder(m.item.GetService(), strings.Trim(m.item.GetPath()+"/"+*m.id, "/"))
+	// m.inside = metadata.NewFolder(m.item.GetService(), strings.Trim(m.item.GetPath()+"/"+*m.id, "/"))
 	return m, nil
 }
 
@@ -170,13 +170,19 @@ func (m *Network) ReadByReference(ref string) (err error) {
 	defer tracer.OnExitTrace()()
 	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
 
-	errID := m.mayReadByID(ref)
-	errName := m.mayReadByName(ref)
-
-	if errID != nil && errName != nil {
-		return scerr.NotFoundErrorWithCause(fmt.Sprintf("reference %s not found", ref), scerr.ErrListError([]error{errID, errName}))
+	var errors []error
+	err = m.mayReadByID(ref) // First read by id...
+	if err != nil {
+		errors = append(errors)
+		err = m.mayReadByName(ref) // ... then read by name if by id failed (no need to read twice if the 2 exist)
+		if err != nil {
+			errors = append(errors)
+		}
 	}
 
+	if err != nil {
+		return scerr.NotFoundErrorWithCause(fmt.Sprintf("reference %s not found", ref), scerr.ErrListError(errors))
+	}
 	return nil
 }
 

@@ -1,8 +1,8 @@
-VERSION=20.03.2
+VERSION=20.06.0
 export VERSION
 
 ifeq ($(MAKE_LEVEL),)
-MAKE_LEVEL=-1
+MAKE_LEVEL=1
 MAKE_TRACE=""
 else
 MAKE_LEVEL+=1
@@ -14,31 +14,7 @@ ifndef VERBOSE
 MAKEFLAGS += --no-print-directory
 endif
 
-ifneq (, $(GOOS))
-ifneq (, $(GOARCH))
-ifneq (, $(GOBIN))
-$(error "Cross compilation cannot work with GOBIN defined. Stopping build.")
-endif
-endif
-endif
-
-ifneq (, $(GOOS))
-ifeq (, $(GOARCH))
-$(error "Cross compilation requires both GOOS and GOARCH to be specified. Stopping build.")
-endif
-endif
-
-ifeq (, $(GOOS))
-ifneq (, $(GOARCH))
-$(error "Cross compilation requires both GOOS and GOARCH to be specified. Stopping build.")
-endif
-endif
-
-ifeq (, $(GOOS))
-RACE_CHECK=-race
-else
-RACE_CHECK=
-endif
+MAKEFLAGS += -s
 
 BRANCH_NAME?="develop"
 FIRSTUPDATE := $(shell git remote update >/dev/null 2>&1)
@@ -103,7 +79,6 @@ else
 GOMODPATH?=$(GOPATH)
 endif
 endif
-
 
 ifeq ($(strip $(GOPATH)),)
 GOMODPATH?=$(HOME)/go

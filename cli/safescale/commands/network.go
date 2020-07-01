@@ -174,6 +174,11 @@ var networkCreate = cli.Command{
 			Usage: "Image name for the gateway",
 		},
 		cli.StringFlag{
+			Name: "domain",
+			Value: "",
+			Usage: "Defines the domain used to define host FQDN (default: empty)",
+		},
+		cli.StringFlag{
 			Name:  "gwname",
 			Value: "",
 			Usage: "Name for the gateway. Default to 'gw-<network_name>'",
@@ -233,13 +238,14 @@ var networkCreate = cli.Command{
 			Cidr:     c.String("cidr"),
 			Name:     c.Args().Get(0),
 			FailOver: c.Bool("failover"),
+			Domain: c.String("domain"),
 			Gateway: &pb.GatewayDefinition{
 				ImageId: c.String("os"),
 				Name:    c.String("gwname"),
 				Sizing:  def.Sizing,
 			},
 		}
-		network, err := client.New().Network.Create(netdef, temporal.GetExecutionTimeout())
+		network, err := client.New().Network.Create(&netdef, temporal.GetExecutionTimeout())
 		if err != nil {
 			return clitools.FailureResponse(clitools.ExitOnRPC(utils.Capitalize(client.DecorateError(err, "creation of network", true).Error())))
 		}

@@ -1,4 +1,4 @@
-//+build !libvirt
+// +build !libvirt
 
 /*
  * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
@@ -36,7 +36,7 @@ type provider struct {
 	tenantParameters map[string]interface{}
 }
 
-//AuthOptions fields are the union of those recognized by each identity implementation and provider.
+// AuthOptions fields are the union of those recognized by each identity implementation and provider.
 type AuthOptions struct {
 }
 
@@ -106,7 +106,7 @@ func (provider *provider) ListNetworks() ([]*resources.Network, error) {
 func (provider *provider) DeleteNetwork(id string) error {
 	return fmt.Errorf(errorStr)
 }
-func (provider *provider) CreateGateway(req resources.GatewayRequest) (*resources.Host, *userdata.Content, error) {
+func (provider *provider) CreateGateway(req resources.GatewayRequest, sizing *resources.SizingRequirements) (*resources.Host, *userdata.Content, error) {
 	return nil, nil, fmt.Errorf(errorStr)
 }
 func (provider *provider) DeleteGateway(string) error {

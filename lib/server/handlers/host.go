@@ -19,8 +19,11 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"os/user"
+	"reflect"
 	"strings"
 	"time"
 
@@ -55,7 +58,7 @@ import (
 
 // HostAPI defines API to manipulate hosts
 type HostAPI interface {
-	Create(ctx context.Context, name string, net string, os string, public bool, sizingParam interface{}, force bool) (*resources.Host, error)
+	Create(ctx context.Context, name string, net string, os string, public bool, sizingParam interface{}, force bool, domain string, keeponfailure bool) (*resources.Host, error)
 	List(ctx context.Context, all bool) ([]*resources.Host, error)
 	ForceInspect(ctx context.Context, ref string) (*resources.Host, error)
 	Inspect(ctx context.Context, ref string) (*resources.Host, error)
@@ -99,27 +102,22 @@ func (handler *HostHandler) Start(ctx context.Context, ref string) (err error) {
 	}
 
 	id := mhm.ID
-	err = handler.service.StartHost(id)
+	err = retryOnCommunicationFailure(
+		func() error {
+			return handler.service.StartHost(id)
+		},
+		0,
+	)
 	if err != nil {
-		switch err.(type) {
-		case scerr.ErrNotFound, scerr.ErrTimeout:
-			return err
-		default:
-			return err
-		}
+		return err
 	}
 
-	err = handler.service.WaitHostState(id, hoststate.STARTED, temporal.GetHostTimeout())
-	if err != nil {
-		switch err.(type) {
-		case scerr.ErrNotFound, scerr.ErrTimeout:
-			return err
-		default:
-			return err
-		}
-	}
-
-	return err
+	return retryOnCommunicationFailure(
+		func() error {
+			return handler.service.WaitHostState(id, hoststate.STARTED, temporal.GetHostTimeout())
+		},
+		0,
+	)
 }
 
 // Stop stops a host
@@ -240,7 +238,7 @@ func (handler *HostHandler) Resize(ctx context.Context, ref string, cpu int, ram
 		MinGPU:      gpuNumber,
 	}
 
-	// TODO RESIZE 1st check new requirements vs old requirements
+	// TODO: RESIZE 1st check new requirements vs old requirements
 	host, err := mh.Get()
 	if err != nil {
 		return nil, err
@@ -297,8 +295,7 @@ func (handler *HostHandler) Resize(ctx context.Context, ref string, cpu int, ram
 // 	force bool,
 func (handler *HostHandler) Create(
 	ctx context.Context,
-	name string, net string, los string, public bool, sizingParam interface{}, force bool,
-) (newHost *resources.Host, err error) {
+	name string, net string, los string, public bool, sizingParam interface{}, force bool, domain string, keeponfailure bool) (newHost *resources.Host, err error) {
 
 	if handler == nil {
 		return nil, scerr.InvalidInstanceError()
@@ -337,22 +334,14 @@ func (handler *HostHandler) Create(
 			return nil, err
 		}
 	} else {
-		hostThere, err := handler.service.GetHostState(name)
-		if err == nil {
+		hostThere, hsErr := handler.service.GetHostState(name)
+		if hsErr == nil {
 			logrus.Warnf("we have a host %s with status: %s", name, hostThere.String())
 			if hostThere != hoststate.TERMINATED {
 				return nil, resources.ResourceDuplicateError("host", name)
 			}
-		} else {
-			switch err.(type) {
-			case scerr.ErrNotFound:
-			case scerr.ErrTimeout:
-				logrus.Warnf("timeout problem retrieving status of host %s: %v", name, err)
-				return nil, resources.ResourceDuplicateError("host", name)
-			default:
-				return nil, resources.ResourceDuplicateError("host", name)
-			}
 		}
+		return nil, resources.ResourceDuplicateError("host", name)
 	}
 
 	var (
@@ -442,7 +431,7 @@ func (handler *HostHandler) Create(
 	}
 
 	var img *resources.Image
-	retryErr := retry.WhileUnsuccessfulDelay1Second(
+	retryErr := retryOnCommunicationFailure(
 		func() error {
 			var innerErr error
 			img, innerErr = handler.service.SearchImage(los)
@@ -459,9 +448,18 @@ func (handler *HostHandler) Create(
 		}
 	}
 
+	if domain == "" {
+		domain = defaultNetwork.Domain
+	}
+	domain = strings.Trim(domain, ".")
+	if domain != "" {
+		domain = "." + domain
+	}
+
 	hostRequest := resources.HostRequest{
 		ImageID:        img.ID,
 		ResourceName:   name,
+		HostName:       name + domain,
 		TemplateID:     template.ID,
 		PublicIP:       public,
 		Networks:       networks,
@@ -470,7 +468,14 @@ func (handler *HostHandler) Create(
 	}
 
 	var userData *userdata.Content
-	host, userData, err = handler.service.CreateHost(hostRequest)
+	retryErr = retryOnCommunicationFailure(
+		func() error {
+			var innerErr error
+			host, userData, innerErr = handler.service.CreateHost(hostRequest)
+			return innerErr
+		},
+		0,
+	)
 	if err != nil {
 		switch err.(type) {
 		case scerr.ErrInvalidRequest:
@@ -483,22 +488,29 @@ func (handler *HostHandler) Create(
 	}
 	defer func() {
 		if err != nil {
-			derr := handler.service.DeleteHost(host.ID)
-			if derr != nil {
-				switch derr.(type) {
+			if keeponfailure {
+				return
+			}
+			retryErr := retryOnCommunicationFailure(
+				func() error {
+					return handler.service.DeleteHost(host.ID)
+				},
+				0,
+			)
+			if retryErr != nil {
+				switch retryErr.(type) {
 				case scerr.ErrNotFound:
-					logrus.Errorf("failed to delete host '%s', resource not found: %v", host.Name, derr)
+					logrus.Errorf("failed to delete host '%s', resource not found: %v", host.Name, retryErr)
 				case scerr.ErrTimeout:
-					logrus.Errorf("failed to delete host '%s', timeout: %v", host.Name, derr)
+					logrus.Errorf("failed to delete host '%s', timeout: %v", host.Name, retryErr)
 				default:
-					logrus.Errorf("failed to delete host '%s', other reason: %v", host.Name, derr)
+					logrus.Errorf("failed to delete host '%s', other reason: %v", host.Name, retryErr)
 				}
 			}
-			err = scerr.AddConsequence(err, derr)
+			err = scerr.AddConsequence(err, retryErr)
 		}
 	}()
 
-	// Updates property propsv1.HostSizing
 	if host == nil {
 		return nil, fmt.Errorf("unexpected error creating host instance: host is nil")
 	}
@@ -526,6 +538,9 @@ func (handler *HostHandler) Create(
 	// Starting from here, remove metadata if exiting with error
 	defer func() {
 		if err != nil {
+			if keeponfailure {
+				return
+			}
 			derr := mh.Delete()
 			if derr != nil {
 				logrus.Errorf("failed to remove host metadata after host creation failure")
@@ -534,6 +549,7 @@ func (handler *HostHandler) Create(
 		}
 	}()
 
+	// Updates property propsv1.HostSizing
 	if sizing != nil {
 		err = host.Properties.LockForWrite(hostproperty.SizingV1).ThenUse(func(clonable data.Clonable) error {
 			hostSizingV1 := clonable.(*propsv1.HostSizing)
@@ -583,6 +599,7 @@ func (handler *HostHandler) Create(
 		hostDescriptionV1 := clonable.(*propsv1.HostDescription)
 		hostDescriptionV1.Created = time.Now()
 		hostDescriptionV1.Creator = creator
+		hostDescriptionV1.Domain = domain
 		return nil
 	})
 	if err != nil {
@@ -657,6 +674,7 @@ func (handler *HostHandler) Create(
 
 		if client.IsProvisioningError(derr) {
 			logrus.Errorf("%+v", derr)
+			retrieveForensicsData(ctx, sshHandler, host)
 			return nil, fmt.Errorf("failed to provision host '%s', please check safescaled logs", host.Name)
 		}
 
@@ -713,7 +731,11 @@ func (handler *HostHandler) Create(
 	retryErr = retry.WhileUnsuccessfulDelay1SecondWithNotify(
 		func() error {
 			var inErr error
-			retcode, _, _, inErr = sshCmd.RunWithTimeout(nil, outputs.COLLECT, 0)
+			retcode, stdout, stderr, inErr = sshCmd.RunWithTimeout(nil, outputs.COLLECT, 0)
+			if stdout != "" || stderr != "" {
+				logrus.Warnf("Remote SSH service response: errorcode %d, '%s', '%s'", retcode, stdout, stderr)
+			}
+
 			return inErr
 		},
 		temporal.GetHostTimeout(),
@@ -731,8 +753,9 @@ func (handler *HostHandler) Create(
 		retrieveForensicsData(ctx, sshHandler, host)
 
 		// Setting err will trigger defers
-		err = fmt.Errorf("failed to finalize host '%s' installation: stdout[%s], stderr[%s]", host.Name, stdout, stderr)
+		err = fmt.Errorf("failed to finalize host '%s' installation: retcode=%d, stdout[%s], stderr[%s]", host.Name, retcode, stdout, stderr)
 		if client.IsProvisioningError(err) {
+			retrieveForensicsData(ctx, sshHandler, host)
 			logrus.Error(err)
 		}
 
@@ -760,6 +783,7 @@ func (handler *HostHandler) Create(
 		}
 
 		if client.IsProvisioningError(err) {
+			retrieveForensicsData(ctx, sshHandler, host)
 			return nil, fmt.Errorf("error creating host '%s', error provisioning the new host, please check safescaled logs", host.Name)
 		}
 
@@ -793,7 +817,7 @@ func getPhaseWarningsAndErrors(ctx context.Context, sshHandler *SSHHandler, host
 			if strings.HasPrefix(line, "An error occurred in line") {
 				warnings = append(warnings, line)
 			}
-			if strings.HasPrefix(line, "PROVISIONING_ERROR") {
+			if strings.HasPrefix(line, "PROVISIONING_ERROR:") {
 				errs = append(errs, line)
 			}
 		}
@@ -808,28 +832,45 @@ func retrieveForensicsData(ctx context.Context, sshHandler *SSHHandler, host *re
 	}
 	if forensics := os.Getenv("SAFESCALE_FORENSICS"); forensics != "" {
 		_ = os.MkdirAll(utils.AbsPathify(fmt.Sprintf("$HOME/.safescale/forensics/%s", host.Name)), 0777)
-		dumpName := utils.AbsPathify(fmt.Sprintf("$HOME/.safescale/forensics/%s/userdata-%s.", host.Name, "phase2"))
+		dumpName := utils.AbsPathify(fmt.Sprintf("$HOME/.safescale/forensics/%s/userdata-%s.", host.Name, "phase1"))
 		etcDumpName := utils.AbsPathify(fmt.Sprintf("$HOME/.safescale/forensics/%s/etcdata.tar.gz", host.Name))
 		textDumpName := utils.AbsPathify(fmt.Sprintf("$HOME/.safescale/forensics/%s/textdata.tar.gz", host.Name))
 
-		_, _, _, _ = sshHandler.Run(ctx, host.Name, "sudo tar -czvf etcdir.tar.gz /etc", outputs.COLLECT)
-		_, _, _, _ = sshHandler.Run(ctx, host.Name, "systemd-resolve --status > /tmp/systemd-resolve.txt", outputs.COLLECT)
-		_, _, _, _ = sshHandler.Run(ctx, host.Name, "netplan ip leases eth0 > /tmp/netplan.txt", outputs.COLLECT)
-		_, _, _, _ = sshHandler.Run(ctx, host.Name, "sudo tar -czvf textdumps.tar.gz /tmp/*.txt", outputs.COLLECT)
-		_, _, _, _ = sshHandler.Copy(ctx, host.Name+":/home/safescale/etcdir.tar.gz", etcDumpName)
-		_, _, _, _ = sshHandler.Copy(ctx, host.Name+":/home/safescale/textdumps.tar.gz", textDumpName)
+		_, _, _, err := sshHandler.RunWithTimeout(ctx, host.Name, "whoami", outputs.COLLECT, 10*time.Second)
+		if err == nil { // If there's no ssh connection, no need to wait
+			_, _, _, _ = sshHandler.Run(ctx, host.Name, "sudo tar -czvf etcdir.tar.gz /etc", outputs.COLLECT)
+			_, _, _, _ = sshHandler.Run(ctx, host.Name, "sudo tar -czvf etcdir.tar.gz /etc", outputs.COLLECT)
+			_, _, _, _ = sshHandler.Run(ctx, host.Name, "systemd-resolve --status > /tmp/systemd-resolve.txt", outputs.COLLECT)
+			_, _, _, _ = sshHandler.Run(ctx, host.Name, "netplan ip leases eth0 > /tmp/netplan.txt", outputs.COLLECT)
+			_, _, _, _ = sshHandler.Run(ctx, host.Name, "sudo tar -czvf textdumps.tar.gz /tmp/*.txt", outputs.COLLECT)
+			_, _, _, _ = sshHandler.Copy(ctx, host.Name+":/home/safescale/etcdir.tar.gz", etcDumpName)
+			_, _, _, _ = sshHandler.Copy(ctx, host.Name+":/home/safescale/textdumps.tar.gz", textDumpName)
 
-		_, _, _, _ = sshHandler.Copy(ctx, host.Name+":"+utils.TempFolder+"/user_data.phase2.sh", dumpName+"sh")
-		_, _, _, _ = sshHandler.Copy(ctx, host.Name+":"+utils.LogFolder+"/user_data.phase2.log", dumpName+"log")
+			_, _, _, _ = sshHandler.Copy(ctx, host.Name+":"+utils.TempFolder+"/user_data.phase1.sh", dumpName+"sh")
+			_, _, _, _ = sshHandler.Copy(ctx, host.Name+":"+utils.LogFolder+"/user_data.phase1.log", dumpName+"log")
+
+			dumpName = utils.AbsPathify(fmt.Sprintf("$HOME/.safescale/forensics/%s/userdata-%s.", host.Name, "phase2"))
+			_, _, _, _ = sshHandler.Copy(ctx, host.Name+":"+utils.TempFolder+"/user_data.phase2.sh", dumpName+"sh")
+			_, _, _, _ = sshHandler.Copy(ctx, host.Name+":"+utils.LogFolder+"/user_data.phase2.log", dumpName+"log")
+			_, _, _, _ = sshHandler.Copy(ctx, host.Name+":"+utils.LogFolder+"/packages_installed_before.phase2.list", utils.AbsPathify(fmt.Sprintf("$HOME/.safescale/forensics/%s/packages_installed_before.%s.list", host.Name, "phase2")))
+			_, _, _, _ = sshHandler.Copy(ctx, host.Name+":"+utils.LogFolder+"/packages_installed_after.phase2.list", utils.AbsPathify(fmt.Sprintf("$HOME/.safescale/forensics/%s/packages_installed_after.%s.list", host.Name, "phase2")))
+		}
 	}
 }
 
 // getOrCreateDefaultNetwork gets network resources.SingleHostNetworkName or create it if necessary
 // We don't want metadata on this network, so we use directly provider api instead of services
 func (handler *HostHandler) getOrCreateDefaultNetwork() (network *resources.Network, err error) {
-	network, err = handler.service.GetNetworkByName(resources.SingleHostNetworkName)
-	if err != nil {
-		switch err.(type) {
+	retryErr := retryOnCommunicationFailure(
+		func() error {
+			var innerErr error
+			network, innerErr = handler.service.GetNetworkByName(resources.SingleHostNetworkName)
+			return innerErr
+		},
+		0,
+	)
+	if retryErr != nil {
+		switch retryErr.(type) {
 		case scerr.ErrInvalidRequest, scerr.ErrNotFound, scerr.ErrTimeout:
 			return nil, err
 		default:
@@ -846,9 +887,16 @@ func (handler *HostHandler) getOrCreateDefaultNetwork() (network *resources.Netw
 		CIDR:      "10.0.0.0/8",
 	}
 
-	network, err = handler.service.CreateNetwork(request)
-	if err != nil {
-		switch err.(type) {
+	retryErr = retryOnCommunicationFailure(
+		func() error {
+			var innerErr error
+			network, innerErr = handler.service.CreateNetwork(request)
+			return innerErr
+		},
+		0,
+	)
+	if retryErr != nil {
+		switch retryErr.(type) {
 		case scerr.ErrInvalidRequest, scerr.ErrNotFound, scerr.ErrTimeout:
 			return nil, err
 		default:
@@ -887,7 +935,7 @@ func (handler *HostHandler) List(ctx context.Context, all bool) (hosts []*resour
 	return hosts, nil
 }
 
-// ForceInspect ...
+// Force 	 ...
 // If not found, return (nil, err)
 func (handler *HostHandler) ForceInspect(ctx context.Context, ref string) (host *resources.Host, err error) {
 	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", ref), true).WithStopwatch().GoingIn()
@@ -921,16 +969,18 @@ func (handler *HostHandler) Inspect(ctx context.Context, ref string) (host *reso
 	if err != nil {
 		return nil, err
 	}
-	host, err = handler.service.InspectHost(host)
-	if err != nil {
-		switch err.(type) {
-		case scerr.ErrInvalidRequest, scerr.ErrNotFound, scerr.ErrTimeout:
-			return nil, err
-		default:
-			return nil, err
-		}
-	}
 
+	err = retryOnCommunicationFailure(
+		func() error {
+			var innerErr error
+			host, innerErr = handler.service.InspectHost(host)
+			return innerErr
+		},
+		0,
+	)
+	if err != nil {
+		return nil, err
+	}
 	if host == nil {
 		return nil, fmt.Errorf("failure inspecting host [%s]", ref)
 	}
@@ -938,6 +988,56 @@ func (handler *HostHandler) Inspect(ctx context.Context, ref string) (host *reso
 	return host, nil
 }
 
+// retryOnCommunicationFailure executes fn inside a retry loop with tolerance for communication errors (relative to net package)
+func retryOnCommunicationFailure(fn func() error, duration time.Duration) error {
+	// default duration is 10 seconds
+	if duration <= 0 {
+		duration = 10*time.Second
+	}
+
+	err := retry.WhileUnsuccessfulDelay1Second(
+		func() error {
+			return normalizeError(fn())
+		},
+		duration,
+	)
+	switch realErr := err.(type) {
+	case retry.ErrAborted:
+		err = realErr.Cause()
+	}
+	return err
+}
+
+// normalizeError analyzes the error passed as parameter and rewrite it to be more explicit
+// If the error is not a communication error, do not let a chance to retry by returning a *retry.ErrAborted error
+// containing the causing error in it
+func normalizeError(in error) (err error) {
+	// VPL: see if we could replace this defer with retry notification ability in retryOnCommunicationFailure
+	defer func() {
+		if err != nil {
+			switch err.(type) {
+			case scerr.ErrInvalidRequest:
+				logrus.Warning(err.Error())
+			}
+		}
+	}()
+
+	if in != nil {
+		switch realErr := in.(type) {
+		case *url.Error:
+			switch commErr := realErr.Err.(type) {
+			case *net.DNSError:
+				return scerr.InvalidRequestError(fmt.Sprintf("failed to resolve by DNS: %v", commErr))
+			default:
+				return scerr.InvalidRequestError(fmt.Sprintf("failed to communicate (error type: %s): %v", reflect.TypeOf(realErr).String(), realErr.Error()))
+			}
+		default:
+			// In any other case, the error should explain the potential retry has to stop
+			return scerr.AbortedError("", in)
+		}
+	}
+	return nil
+}
 // Delete deletes host referenced by ref
 func (handler *HostHandler) Delete(ctx context.Context, ref string) (err error) {
 	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", ref), true).WithStopwatch().GoingIn()
@@ -1067,9 +1167,16 @@ func (handler *HostHandler) Delete(ctx context.Context, ref string) (err error) 
 	}
 
 	// Conditions are met, delete host
-	var deleteMetadataOnly bool
-	var moreTimeNeeded bool
-	err = handler.service.DeleteHost(host.ID)
+	var (
+		deleteMetadataOnly bool
+		moreTimeNeeded bool
+	)
+	err = retryOnCommunicationFailure(
+		func() error {
+			return handler.service.DeleteHost(host.ID)
+		},
+		0,
+	)
 	if err != nil {
 		switch err.(type) {
 		case scerr.ErrNotFound:
@@ -1081,9 +1188,9 @@ func (handler *HostHandler) Delete(ctx context.Context, ref string) (err error) 
 		}
 	}
 
-	// FIXME Add GetHostState verification
+	// FIXME: Add GetHostState verification
 	if moreTimeNeeded {
-		if state, ok := handler.service.GetHostState(host.ID); ok == nil { // FIXME Unhandled timeout
+		if state, ok := handler.service.GetHostState(host.ID); ok == nil { // FIXME: Unhandled timeout
 			logrus.Warnf("While deleting the status was [%s]", state)
 			if state != hoststate.ERROR {
 				deleteMetadataOnly = true
@@ -1110,24 +1217,27 @@ func (handler *HostHandler) Delete(ctx context.Context, ref string) (err error) 
 		var hostBis *resources.Host
 		err2 := host.Properties.LockForRead(hostproperty.SizingV1).ThenUse(func(clonable data.Clonable) error {
 			hostSizingV1 := clonable.(*propsv1.HostSizing)
-			return host.Properties.LockForRead(hostproperty.NetworkV1).ThenUse(func(clonable data.Clonable) error {
-				hostNetworkV1 := clonable.(*propsv1.HostNetwork)
-				//FIXME: host's os name is not stored in metadatas so we used ubuntu 18.04 by default
-				var err3 error
-				sizing := resources.SizingRequirements{
-					MinCores:    hostSizingV1.AllocatedSize.Cores,
-					MaxCores:    hostSizingV1.AllocatedSize.Cores,
-					MinFreq:     hostSizingV1.AllocatedSize.CPUFreq,
-					MinGPU:      hostSizingV1.AllocatedSize.GPUNumber,
-					MinRAMSize:  hostSizingV1.AllocatedSize.RAMSize,
-					MaxRAMSize:  hostSizingV1.AllocatedSize.RAMSize,
-					MinDiskSize: hostSizingV1.AllocatedSize.DiskSize,
-				}
-				hostBis, err3 = handler.Create(context.Background(), host.Name, hostNetworkV1.DefaultNetworkID, "ubuntu 18.04", (len(hostNetworkV1.PublicIPv4)+len(hostNetworkV1.PublicIPv6)) != 0, &sizing, true)
-				if err3 != nil {
-					return fmt.Errorf("failed to stop host deletion : %s", err3.Error())
-				}
-				return nil
+			return host.Properties.LockForRead(hostproperty.DescriptionV1).ThenUse(func(clonable data.Clonable) error {
+				hostDescriptionV1 := clonable.(*propsv1.HostDescription)
+				return host.Properties.LockForRead(hostproperty.NetworkV1).ThenUse(func(clonable data.Clonable) error {
+					hostNetworkV1 := clonable.(*propsv1.HostNetwork)
+					// FIXME: host's os name is not stored in metadata so we used ubuntu 18.04 by default
+					var err3 error
+					sizing := resources.SizingRequirements{
+						MinCores:    hostSizingV1.AllocatedSize.Cores,
+						MaxCores:    hostSizingV1.AllocatedSize.Cores,
+						MinFreq:     hostSizingV1.AllocatedSize.CPUFreq,
+						MinGPU:      hostSizingV1.AllocatedSize.GPUNumber,
+						MinRAMSize:  hostSizingV1.AllocatedSize.RAMSize,
+						MaxRAMSize:  hostSizingV1.AllocatedSize.RAMSize,
+						MinDiskSize: hostSizingV1.AllocatedSize.DiskSize,
+					}
+					hostBis, err3 = handler.Create(context.Background(), host.Name, hostNetworkV1.DefaultNetworkID, "ubuntu 18.04", (len(hostNetworkV1.PublicIPv4)+len(hostNetworkV1.PublicIPv6)) != 0, &sizing, true, hostDescriptionV1.Domain, false)
+					if err3 != nil {
+						return fmt.Errorf("failed to stop host deletion : %s", err3.Error())
+					}
+					return nil
+				})
 			})
 		})
 		if err2 != nil {

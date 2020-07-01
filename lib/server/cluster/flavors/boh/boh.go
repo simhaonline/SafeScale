@@ -83,7 +83,7 @@ func minimumRequiredServers(task concurrency.Task, foreman control.Foreman) (int
 		masterNodeCount = 1
 	case complexity.Normal:
 		privateNodeCount = 3
-		masterNodeCount = 2
+		masterNodeCount = 3
 	case complexity.Large:
 		privateNodeCount = 7
 		masterNodeCount = 3
@@ -91,8 +91,8 @@ func minimumRequiredServers(task concurrency.Task, foreman control.Foreman) (int
 	return masterNodeCount, privateNodeCount, 0
 }
 
-func gatewaySizing(task concurrency.Task, foreman control.Foreman) pb.HostDefinition {
-	return pb.HostDefinition{
+func gatewaySizing(task concurrency.Task, foreman control.Foreman) *pb.HostDefinition {
+	return &pb.HostDefinition{
 		Sizing: &pb.HostSizing{
 			MinCpuCount: 2,
 			MaxCpuCount: 4,
@@ -104,8 +104,8 @@ func gatewaySizing(task concurrency.Task, foreman control.Foreman) pb.HostDefini
 	}
 }
 
-func nodeSizing(task concurrency.Task, foreman control.Foreman) pb.HostDefinition {
-	return pb.HostDefinition{
+func nodeSizing(task concurrency.Task, foreman control.Foreman) *pb.HostDefinition {
+	return &pb.HostDefinition{
 		Sizing: &pb.HostSizing{
 			MinCpuCount: 2,
 			MaxCpuCount: 4,
@@ -196,7 +196,7 @@ func getNodeInstallationScript(task concurrency.Task, foreman control.Foreman, n
 	switch nodeType {
 	case nodetype.Master:
 		script = "boh_install_master.sh"
-	case nodetype.Node:
+	case nodetype.Gateway, nodetype.Node:
 		script = "boh_install_node.sh"
 	}
 	return script, data

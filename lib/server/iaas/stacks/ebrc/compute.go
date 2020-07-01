@@ -22,7 +22,6 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
-	"github.com/CS-SI/SafeScale/lib/server/iaas/providers"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/hostproperty"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/hoststate"
@@ -45,7 +44,7 @@ import (
 	propsv1 "github.com/CS-SI/SafeScale/lib/server/iaas/resources/properties/v1"
 )
 
-//-------------IMAGES---------------------------------------------------------------------------------------------------
+// -------------IMAGES---------------------------------------------------------------------------------------------------
 
 // ListImages lists available OS images
 func (s *StackEbrc) ListImages(all bool) ([]resources.Image, error) {
@@ -53,7 +52,7 @@ func (s *StackEbrc) ListImages(all bool) ([]resources.Image, error) {
 	defer logrus.Debug("<<< stacks.ebrc::ListImages()")
 
 	if s == nil {
-		panic("Calling stacks.ebrc::ListImage from nil pointer!")
+		return nil, scerr.InvalidInstanceError()
 	}
 
 	var empty []resources.Image
@@ -63,21 +62,21 @@ func (s *StackEbrc) ListImages(all bool) ([]resources.Image, error) {
 		return empty, errors.Wrap(err, fmt.Sprintf("Error listing images"))
 	}
 
-	catalog_name := ""
+	catalogName := ""
 	for _, item := range org.Org.Link {
 		// Retrieve the first catalog name for further usage
 		if item.Type == "application/vnd.vmware.vcloud.catalog+xml" {
-			catalog_name = item.Name
+			catalogName = item.Name
 		} else {
 			continue
 		}
 
-		if catalog_name != "" {
-			cat, err := org.FindCatalog(catalog_name)
+		if catalogName != "" {
+			cat, err := org.FindCatalog(catalogName)
 			if err != nil {
 				continue
 			}
-			if !all && !strings.Contains(catalog_name, "Linux") {
+			if !all && !strings.Contains(catalogName, "Linux") {
 				continue
 			}
 			for _, item := range cat.Catalog.CatalogItems {
@@ -94,7 +93,7 @@ func (s *StackEbrc) ListImages(all bool) ([]resources.Image, error) {
 // GetImage returns the Image referenced by id
 func (s *StackEbrc) GetImage(id string) (*resources.Image, error) {
 	if s == nil {
-		panic("Calling s.GetImage with s==nil!")
+		return nil, scerr.InvalidInstanceError()
 	}
 
 	images, err := s.ListImages(true)
@@ -110,7 +109,7 @@ func (s *StackEbrc) GetImage(id string) (*resources.Image, error) {
 	return nil, nil
 }
 
-//-------------TEMPLATES------------------------------------------------------------------------------------------------
+// -------------TEMPLATES------------------------------------------------------------------------------------------------
 
 // ListTemplates overload OpenStackEbrc ListTemplate method to filter wind and flex instance and add GPU configuration
 func (s *StackEbrc) ListTemplates(all bool) ([]resources.HostTemplate, error) {
@@ -118,7 +117,7 @@ func (s *StackEbrc) ListTemplates(all bool) ([]resources.HostTemplate, error) {
 	defer logrus.Debug("<<< stacks.ebrc::ListTemplates()")
 
 	if s == nil {
-		panic("Calling stacks.ebrc::ListImage from nil pointer!")
+		return nil, scerr.InvalidInstanceError()
 	}
 
 	var empty []resources.HostTemplate
@@ -133,7 +132,7 @@ func (s *StackEbrc) ListTemplatesSpecial(all bool) ([]resources.HostTemplate, er
 	defer logrus.Debug("<<< stacks.ebrc::ListTemplates()")
 
 	if s == nil {
-		panic("Calling stacks.ebrc::ListTemplates from nil pointer!")
+		return nil, scerr.InvalidInstanceError()
 	}
 
 	var empty []resources.HostTemplate
@@ -143,21 +142,21 @@ func (s *StackEbrc) ListTemplatesSpecial(all bool) ([]resources.HostTemplate, er
 		return empty, errors.Wrap(err, fmt.Sprintf("Error listing templates"))
 	}
 
-	catalog_name := ""
+	catalogName := ""
 	for _, item := range org.Org.Link {
 		// Retrieve the first catalog name for further usage
 		if item.Type == "application/vnd.vmware.vcloud.catalog+xml" {
-			catalog_name = item.Name
+			catalogName = item.Name
 		} else {
 			continue
 		}
 
-		if catalog_name != "" {
-			cat, err := org.FindCatalog(catalog_name)
+		if catalogName != "" {
+			cat, err := org.FindCatalog(catalogName)
 			if err != nil {
 				continue
 			}
-			if !all && !strings.Contains(catalog_name, "Linux") {
+			if !all && !strings.Contains(catalogName, "Linux") {
 				continue
 			}
 			for _, item := range cat.Catalog.CatalogItems {
@@ -168,10 +167,15 @@ func (s *StackEbrc) ListTemplatesSpecial(all bool) ([]resources.HostTemplate, er
 					}
 
 					vapptemplate, cerr := catalogitem.GetVAppTemplate()
+					if cerr != nil {
+						continue
+					}
+
 					ms, cerr := vapptemplate.GetMemorySize()
 					if cerr != nil {
 						continue
 					}
+
 					ds, cerr := vapptemplate.GetTemplateDiskSize()
 					if cerr != nil {
 						continue
@@ -193,13 +197,13 @@ func (s *StackEbrc) ListTemplatesSpecial(all bool) ([]resources.HostTemplate, er
 	return empty, nil
 }
 
-//GetTemplate overload OpenStackEbrc GetTemplate method to add GPU configuration
+// GetTemplate overload OpenStackEbrc GetTemplate method to add GPU configuration
 func (s *StackEbrc) GetTemplate(id string) (*resources.HostTemplate, error) {
 	logrus.Debugf(">>> stacks.ebrc::GetTemplate(%s)", id)
 	defer logrus.Debugf("<<< stacks.ebrc::GetTemplate(%s)", id)
 
 	if s == nil {
-		panic("Calling method GetTemplate from nil!")
+		return nil, scerr.InvalidInstanceError()
 	}
 
 	// "Cores:%d,Disk:%d,Memory:%d"
@@ -220,7 +224,7 @@ func (s *StackEbrc) GetTemplate(id string) (*resources.HostTemplate, error) {
 	return nil, nil
 }
 
-//-------------SSH KEYS-------------------------------------------------------------------------------------------------
+// -------------SSH KEYS-------------------------------------------------------------------------------------------------
 
 // CreateKeyPair creates and import a key pair
 func (s *StackEbrc) CreateKeyPair(name string) (*resources.KeyPair, error) {
@@ -228,7 +232,7 @@ func (s *StackEbrc) CreateKeyPair(name string) (*resources.KeyPair, error) {
 	defer logrus.Debugf("<<< stacks.ebrc::CreateKeyPair(%s)", name)
 
 	if s == nil {
-		panic("Calling method CreateKeyPair from nil!")
+		return nil, scerr.InvalidInstanceError()
 	}
 
 	privateKey, _ := rsa.GenerateKey(rand.Reader, 2048)
@@ -274,7 +278,7 @@ func (s *StackEbrc) CreateHost(request resources.HostRequest) (host *resources.H
 	defer logrus.Debug("ebrc.Client.CreateHost() done")
 
 	if s == nil {
-		panic("Calling s.CreateHost with s==nil!")
+		return nil, nil, scerr.InvalidInstanceError()
 	}
 
 	userData := userdata.NewContent()
@@ -302,22 +306,21 @@ func (s *StackEbrc) CreateHost(request resources.HostRequest) (host *resources.H
 
 	// Recover catalog name
 	for _, item := range org.Org.Link {
-		catalog_name := ""
+		catalogName := ""
 		if item.Type == "application/vnd.vmware.vcloud.catalog+xml" {
-			catalog_name = item.Name
+			catalogName = item.Name
 		} else {
 			continue
 		}
 
-		if catalog_name != "" {
-			cat, err := org.FindCatalog(catalog_name)
+		if catalogName != "" {
+			cat, err := org.FindCatalog(catalogName)
 			if err != nil {
 				continue
 			}
 			for _, item := range cat.Catalog.CatalogItems {
 				for _, deepItem := range item.CatalogItem {
 					if deepItem.ID == request.ImageID {
-						catalogName = catalog_name
 						itemName = deepItem.Name
 					}
 				}
@@ -361,18 +364,18 @@ func (s *StackEbrc) CreateHost(request resources.HostRequest) (host *resources.H
 	}
 	nets := []*types.OrgVDCNetwork{net.OrgVDCNetwork}
 
-	storage_profile_reference := types.Reference{}
+	storageProfileReference := types.Reference{}
 
 	for _, sps := range vdc.Vdc.VdcStorageProfiles {
 		for _, sp := range sps.VdcStorageProfile {
-			storage_profile_reference, err = vdc.FindStorageProfileReference(sp.Name)
+			storageProfileReference, err = vdc.FindStorageProfileReference(sp.Name)
 			if err != nil {
 				return nil, userData, scerr.Errorf(fmt.Sprintf("error finding storage profile %s", sp.Name), err)
 			}
 		}
 	}
 
-	log.Printf("storage_profile %s", storage_profile_reference)
+	log.Printf("storage_profile %s", storageProfileReference)
 	// FIXME Remove this
 	// logrus.Warningf("Request [%s]", spew.Sdump(request))
 
@@ -381,7 +384,7 @@ func (s *StackEbrc) CreateHost(request resources.HostRequest) (host *resources.H
 	if err != nil {
 		retryErr := retry.WhileUnsuccessfulDelay5Seconds(
 			func() error {
-				task, err := vdc.ComposeVAppWithDHCP(nets, vapptemplate, storage_profile_reference, request.ResourceName, fmt.Sprintf("%s description", request.ResourceName), true)
+				task, err := vdc.ComposeVAppWithDHCP(nets, vapptemplate, storageProfileReference, request.ResourceName, fmt.Sprintf("%s description", request.ResourceName), true)
 				if err != nil {
 					logrus.Warning(err)
 					return err
@@ -453,7 +456,7 @@ func (s *StackEbrc) CreateHost(request resources.HostRequest) (host *resources.H
 		return nil, userData, scerr.Errorf(fmt.Sprintf("error changing vmname: %#v", err), err)
 	}
 
-	//----Initialize----
+	// ----Initialize----
 	if keyPair == nil {
 		var err error
 		keyPair, err = s.CreateKeyPair(fmt.Sprintf("key_%s", resourceName))
@@ -562,6 +565,10 @@ func (s *StackEbrc) CreateHost(request resources.HostRequest) (host *resources.H
 	host.Password = request.Password
 
 	publicIPs, err := s.getPublicIPs()
+	if err != nil {
+		return nil, userData, err
+	}
+
 	selectedIP := publicIPs.IPRange[0].StartAddress
 
 	hostIsAGateway := false
@@ -649,12 +656,12 @@ func (s *StackEbrc) InspectHost(hostParam interface{}) (*resources.Host, error) 
 	defer logrus.Debug("ebrc.Client.InspectHost() done")
 
 	if s == nil {
-		panic("Calling s.InspectHost with s==nil!")
+		return nil, scerr.InvalidInstanceError()
 	}
 
 	_, vdc, err := s.getOrgVdc()
 	if err != nil {
-		return nil, errors.Wrap(err, fmt.Sprintf("Error getting host by name"))
+		return nil, errors.Wrap(err, fmt.Sprintf("error inspecting host"))
 	}
 
 	var host *resources.Host
@@ -665,7 +672,11 @@ func (s *StackEbrc) InspectHost(hostParam interface{}) (*resources.Host, error) 
 	case *resources.Host:
 		host = hostParam.(*resources.Host)
 	default:
-		panic("erbc.Stack::InspectHost(): parameter 'hostParam' must be a string or a *resources.Host!")
+		return nil, scerr.InvalidParameterError("hostParam", "must be a string or a *resources.Host")
+	}
+
+	if host == nil {
+		return nil, scerr.InvalidParameterError("host", "cannot be nil")
 	}
 
 	byName := true
@@ -675,14 +686,17 @@ func (s *StackEbrc) InspectHost(hostParam interface{}) (*resources.Host, error) 
 		hostRef = host.ID
 	}
 
-	vapp, err := vdc.FindVAppByName(hostRef)
-	if err != nil && byName {
-		return nil, errors.Wrap(err, fmt.Sprintf("Error getting host by name"))
-	}
-	if !byName {
+	var vapp govcd.VApp
+
+	if byName {
+		vapp, err = vdc.FindVAppByName(hostRef)
+		if err != nil {
+			return nil, errors.Wrap(err, fmt.Sprintf("error inspecting host"))
+		}
+	} else {
 		vapp, err = vdc.FindVAppByID(hostRef)
 		if err != nil {
-			return nil, errors.Wrap(err, fmt.Sprintf("Error getting host by id"))
+			return nil, errors.Wrap(err, fmt.Sprintf("error inspecting host"))
 		}
 	}
 
@@ -712,7 +726,7 @@ func (s *StackEbrc) complementHost(host *resources.Host, newHost *resources.Host
 	}
 
 	if s == nil {
-		panic("Calling s.complementHost with s==nil!")
+		return scerr.InvalidInstanceError()
 	}
 
 	host.ID = newHost.ID
@@ -749,7 +763,7 @@ func (s *StackEbrc) complementHost(host *resources.Host, newHost *resources.Host
 	return nil
 }
 
-//stateConvert convert vcd state to a HostState.Enum
+// stateConvert convert vcd state to a HostState.Enum
 func stateConvert(stateVcd int) hoststate.Enum {
 	switch stateVcd {
 	case 4, 5:
@@ -769,7 +783,7 @@ func (s *StackEbrc) GetHostByName(name string) (*resources.Host, error) {
 	defer logrus.Debug("ebrc.Client.GetHostByName() done")
 
 	if s == nil {
-		panic("Calling s.GetHostByName with s==nil!")
+		return nil, scerr.InvalidInstanceError()
 	}
 
 	_, vdc, err := s.getOrgVdc()
@@ -806,7 +820,7 @@ func (s *StackEbrc) DeleteHost(id string) error {
 	defer logrus.Debug("ebrc.Client.DeleteHost() done")
 
 	if s == nil {
-		panic("Calling s.DeleteHost with s==nil!")
+		return scerr.InvalidInstanceError()
 	}
 
 	_, vdc, err := s.getOrgVdc()
@@ -852,7 +866,7 @@ func (s *StackEbrc) ListHosts() ([]*resources.Host, error) {
 	defer logrus.Debug("ebrc.Client.ListHosts() done")
 
 	if s == nil {
-		panic("Calling s.ListHosts with s==nil!")
+		return nil, scerr.InvalidInstanceError()
 	}
 
 	org, err := govcd.GetOrgByName(s.EbrcService, s.AuthOptions.ProjectName)
@@ -879,7 +893,7 @@ func (s *StackEbrc) StopHost(id string) error {
 	defer logrus.Debug("ebrc.Client.StopHost() done")
 
 	if s == nil {
-		panic("Calling s.StopHost with s==nil!")
+		return scerr.InvalidInstanceError()
 	}
 
 	_, vdc, err := s.getOrgVdc()
@@ -908,7 +922,7 @@ func (s *StackEbrc) StartHost(id string) error {
 	defer logrus.Debug("ebrc.Client.StartHost() done")
 
 	if s == nil {
-		panic("Calling s.StartHost with s==nil!")
+		return scerr.InvalidInstanceError()
 	}
 
 	_, vdc, err := s.getOrgVdc()
@@ -937,7 +951,7 @@ func (s *StackEbrc) RebootHost(id string) error {
 	defer logrus.Debug("ebrc.Client.RebootHost() done")
 
 	if s == nil {
-		panic("Calling s.RebootHost with s==nil!")
+		return scerr.InvalidInstanceError()
 	}
 
 	_, vdc, err := s.getOrgVdc()
@@ -966,7 +980,7 @@ func (s *StackEbrc) GetHostState(hostParam interface{}) (hoststate.Enum, error) 
 	defer logrus.Debug("ebrc.Client.RebootHost() done")
 
 	if s == nil {
-		panic("Calling s.GetHostState with s==nil!")
+		return hoststate.ERROR, scerr.InvalidInstanceError()
 	}
 
 	host, err := s.InspectHost(hostParam)
@@ -976,7 +990,7 @@ func (s *StackEbrc) GetHostState(hostParam interface{}) (hoststate.Enum, error) 
 	return host.LastState, nil
 }
 
-//-------------Provider Infos-------------------------------------------------------------------------------------------
+// -------------Provider Infos-------------------------------------------------------------------------------------------
 
 // ListAvailabilityZones lists the usable AvailabilityZones
 func (s *StackEbrc) ListAvailabilityZones() (map[string]bool, error) {
@@ -984,33 +998,25 @@ func (s *StackEbrc) ListAvailabilityZones() (map[string]bool, error) {
 }
 
 func (s *StackEbrc) ListRegions() ([]string, error) {
-	panic("implement me")
+	return nil, scerr.NotImplementedError("ListRegions() not implemented yet") // FIXME Technical debt
 }
 
 func (s *StackEbrc) CreateVIP(s1 string, s2 string) (*resources.VirtualIP, error) {
-	panic("implement me")
+	return nil, scerr.NotImplementedError("CreateVIP() not implemented yet") // FIXME Technical debt
 }
 
 func (s *StackEbrc) AddPublicIPToVIP(ip *resources.VirtualIP) error {
-	panic("implement me")
+	return scerr.NotImplementedError("AddPublicIPToVIP() not implemented yet") // FIXME Technical debt
 }
 
 func (s *StackEbrc) BindHostToVIP(ip *resources.VirtualIP, s2 string) error {
-	panic("implement me")
+	return scerr.NotImplementedError("BindHostToVIP() not implemented yet") // FIXME Technical debt
 }
 
 func (s *StackEbrc) UnbindHostFromVIP(ip *resources.VirtualIP, s2 string) error {
-	panic("implement me")
+	return scerr.NotImplementedError("UnbindHostFromVIP() not implemented yet") // FIXME Technical debt
 }
 
 func (s *StackEbrc) DeleteVIP(ip *resources.VirtualIP) error {
-	panic("implement me")
-}
-
-func (s *StackEbrc) GetCapabilities() providers.Capabilities {
-	panic("implement me")
-}
-
-func (s *StackEbrc) GetTenantParameters() map[string]interface{} {
-	panic("implement me")
+	return scerr.NotImplementedError("DeleteVIP() not implemented yet") // FIXME Technical debt
 }

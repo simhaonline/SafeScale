@@ -35,13 +35,13 @@ var ImageHandler = handlers.NewImageHandler
 
 // safescale image list --all=false
 
-//ImageListener image service server grpc
+// ImageListener image service server grpc
 type ImageListener struct{}
 
 // List available images
 func (s *ImageListener) List(ctx context.Context, in *pb.ImageListRequest) (il *pb.ImageList, err error) {
 	if s == nil {
-		return nil, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Error())
+		return nil, status.Errorf(codes.FailedPrecondition, scerr.InvalidInstanceError().Message())
 	}
 
 	tracer := concurrency.NewTracer(nil, "", true).WithStopwatch().GoingIn()
@@ -62,7 +62,7 @@ func (s *ImageListener) List(ctx context.Context, in *pb.ImageListRequest) (il *
 	handler := ImageHandler(currentTenant.Service)
 	images, err := handler.List(ctx, in.GetAll())
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, err.Error())
+		return nil, status.Errorf(codes.Internal, getUserMessage(err))
 	}
 
 	// Map resources.Image to pb.Image

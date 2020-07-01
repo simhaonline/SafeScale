@@ -91,12 +91,14 @@ case $(sfGetFact "linux_kind") in
         chmod 755 /usr/local/bin/rclone && \
         mandb
         ;;
-    redhat|centos)
-        yum makecache fast
-        yum install -y wget curl time rclone jq unzip
-        ;;
-    fedora)
-        dnf install wget curl time rclone jq unzip
+    redhat|rhel|centos|fedora)
+        if [[ -n $(which dnf) ]]; then
+            sfRetry 3m 5 "dnf makecache -y"
+            dnf install -y wget curl time rclone jq unzip
+        else
+            sfRetry 3m 5 "yum makecache"
+            yum install -y wget curl time rclone jq unzip
+        fi
         ;;
     *)
         echo "Unmanaged linux distribution type '$(sfGetFact "linux_kind")'"

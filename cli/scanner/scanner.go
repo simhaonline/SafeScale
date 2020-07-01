@@ -26,6 +26,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -81,7 +82,7 @@ var cmd = fmt.Sprintf("export LANG=C;echo $(%s)î$(%s)î$(%s)î$(%s)î$(%s)î$(%
 	cmdNetSpeed,
 )
 
-//CPUInfo stores CPU properties
+// CPUInfo stores CPU properties
 type CPUInfo struct {
 	TenantName   string `json:"tenant_name,omitempty"`
 	TemplateID   string `json:"template_id,omitempty"`
@@ -402,7 +403,7 @@ func analyzeTenant(group *sync.WaitGroup, theTenant string) (err error) {
 			hostName := "scanhost-" + template.Name
 			hostHandler := handlers.NewHostHandler(serviceProvider)
 
-			host, err := hostHandler.Create(context.Background(), hostName, network.Name, "Ubuntu 18.04", true, template.Name, false)
+			host, err := hostHandler.Create(context.Background(), hostName, network.Name, "Ubuntu 18.04", true, template.Name, false, "", false)
 			if err != nil {
 				logrus.Warnf("template [%s] host '%s': error creation: %v\n", template.Name, hostName, err.Error())
 				return err
@@ -560,7 +561,7 @@ func dumpImages(service iaas.Service, tenant string) (err error) {
 }
 
 func main() {
-	logrus.Printf("%s version %s\n", os.Args[0], Version+", build "+Revision+" ("+BuildDate+")")
+	logrus.Printf("%s version %s\n", os.Args[0], Version+", build "+Revision+" ("+BuildDate+"), compiled with "+runtime.Version())
 
 	safescaledPort := 50051
 

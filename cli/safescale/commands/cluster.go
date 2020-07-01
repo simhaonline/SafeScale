@@ -18,6 +18,7 @@ package commands
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -71,7 +72,7 @@ var ClusterCommand = cli.Command{
 		clusterInspectCommand,
 		clusterStateCommand,
 		clusterRunCommand,
-		//clusterSshCommand,
+		// clusterSshCommand,
 		clusterStartCommand,
 		clusterStopCommand,
 		clusterExpandCommand,
@@ -298,9 +299,10 @@ func convertToMap(c api.Cluster) (map[string]interface{}, error) {
 	result["admin_login"] = "cladm"
 
 	// Add information not directly in cluster GetConfig()
-	//TODO: replace use of !Disabled["remotedesktop"] with use of Installed["remotedesktop"] (not yet implemented)
+	// FUTURE: replace use of !Disabled["remotedesktop"] with use of Installed["remotedesktop"] (not yet implemented)
 	if _, ok := result["features"].(*clusterpropsv1.Features).Disabled["remotedesktop"]; !ok {
 		remoteDesktops := map[string][]string{}
+
 		clientHost := client.New().Host
 		for _, id := range c.ListMasterIDs(concurrency.RootTask()) {
 			host, err := clientHost.Inspect(id, temporal.GetExecutionTimeout())
@@ -318,7 +320,7 @@ func convertToMap(c api.Cluster) (map[string]interface{}, error) {
 		}
 		result["remote_desktop"] = remoteDesktops
 	} else {
-		result["remote_desktop"] = fmt.Sprintf("Remote Desktop not installed. To install it, execute 'safescale deploy platform add-feature %s remotedesktop'.", clusterName)
+		result["remote_desktop"] = fmt.Sprintf("Remote Desktop not installed. To install it, execute 'safescale platform add-feature %s remotedesktop'.", clusterName)
 	}
 
 	return result, nil
@@ -351,11 +353,16 @@ var clusterCreateCommand = cli.Command{
 			Value: "192.168.0.0/16",
 			Usage: "Defines the CIDR of the network to use with cluster",
 		},
+		cli.StringFlag{
+			Name: "domain",
+			Value: "cluster.local",
+			Usage: "Defines the domain name to use for the hostnames (default: cluster.local)",
+		},		
 		cli.StringSliceFlag{
 			Name: "disable",
 			Usage: `Allows to disable addition of default features (must be used several times to disable several features)
 	Accepted features are:
-		remotedesktop (all flavors), reverseproxy (all flavors),
+		ansible (all flavors), remotedesktop (all flavors), reverseproxy (all flavors),
 		gateway-failover (all flavors with Normal or Large complexity),
 		hardening (flavor K8S), helm (flavor K8S)`,
 		},
@@ -437,6 +444,7 @@ var clusterCreateCommand = cli.Command{
 		keep := c.Bool("keep-on-failure")
 
 		cidr := c.String("cidr")
+		domain := c.String("domain")
 
 		disable := c.StringSlice("disable")
 		disableFeatures := map[string]struct{}{}
@@ -505,17 +513,21 @@ var clusterCreateCommand = cli.Command{
 				mastersDef = gatewaysDef         // ... nor for masters
 			}
 		}
-		clusterInstance, err := cluster.Create(concurrency.RootTask(), control.Request{
-			Name:                    clusterName,
-			Complexity:              clusterComplexity,
-			CIDR:                    cidr,
-			Flavor:                  clusterFlavor,
-			KeepOnFailure:           keep,
-			GatewaysDef:             gatewaysDef,
-			MastersDef:              mastersDef,
-			NodesDef:                nodesDef,
-			DisabledDefaultFeatures: disableFeatures,
-		})
+		clusterInstance, err := cluster.Create(
+			concurrency.RootTask(),
+			control.Request{
+				Name:                    clusterName,
+				Complexity:              clusterComplexity,
+				CIDR:                    cidr,
+				Domain: domain,
+				Flavor:                  clusterFlavor,
+				KeepOnFailure:           keep,
+				GatewaysDef:             gatewaysDef,
+				MastersDef:              mastersDef,
+				NodesDef:                nodesDef,
+				DisabledDefaultFeatures: disableFeatures,
+				},
+		)
 		if err != nil {
 			if clusterInstance != nil {
 				cluDel := clusterInstance.Delete(concurrency.RootTask())
@@ -935,6 +947,7 @@ var clusterKubectlCommand = cli.Command{
 		args := c.Args().Tail()
 		var filteredArgs []string
 		ignoreNext := false
+		deleteLocalFile := ""
 		valuesOnRemote := &RemoteFilesHandler{}
 		urlRegex := regexp.MustCompile("^(http|ftp)[s]?://")
 		for idx, arg := range args {
@@ -959,35 +972,52 @@ var clusterKubectlCommand = cli.Command{
 							continue
 						}
 
-						// Check for file
-						st, err := os.Stat(localFile)
-						if err != nil {
-							return cli.NewExitError(err.Error(), 1)
-						}
-						// If it's a link, get the target of it
-						if st.Mode()&os.ModeSymlink == os.ModeSymlink {
-							link, err := filepath.EvalSymlinks(localFile)
+						if localFile == "-" {
+							// If -f - already seen, ignore this one
+							if deleteLocalFile != "" {
+								ignore = true
+								ignoreNext = true
+								continue
+							}
+
+							// data comes from the standard input, captures standard input content and but it on a local temporary file
+							localFile, err = captureStringFromPipe()
+							if err != nil {
+								return cli.NewExitError(fmt.Sprintf("failed to capture standard input: %v", err), 1)
+							}
+							deleteLocalFile = localFile
+							logrus.Infof("localFile='%s'", localFile)
+						} else {
+							// Check for file
+							st, err := os.Stat(localFile)
 							if err != nil {
 								return cli.NewExitError(err.Error(), 1)
 							}
-							_, err = os.Stat(link)
-							if err != nil {
-								return cli.NewExitError(err.Error(), 1)
+							// If it's a link, get the target of it
+							if st.Mode()&os.ModeSymlink == os.ModeSymlink {
+								link, err := filepath.EvalSymlinks(localFile)
+								if err != nil {
+									return cli.NewExitError(err.Error(), 1)
+								}
+								_, err = os.Stat(link)
+								if err != nil {
+									return cli.NewExitError(err.Error(), 1)
+								}
 							}
 						}
 
-						if localFile != "-" {
-							rfi := RemoteFileItem{
-								Local:  localFile,
-								Remote: fmt.Sprintf("%s/helm_values_%d.%s.%d.tmp", utils.TempFolder, idx+1, clientID, time.Now().UnixNano()),
-							}
-							valuesOnRemote.Add(&rfi)
-							filteredArgs = append(filteredArgs, "-f")
-							filteredArgs = append(filteredArgs, rfi.Remote)
-						} else {
-							// data comes from the standard input
-							return clitools.FailureResponse(fmt.Errorf("'-f -' is not yet supported"))
+						// Adds the file to download
+						rfi := RemoteFileItem{
+							Local:  localFile,
+							Remote: fmt.Sprintf("%s/kubectl_%d.%s.%d.tmp", utils.TempFolder, idx+1, clientID, time.Now().UnixNano()),
+							RemoteOwner: "cladm",
+							RemoteRights: "u+rwx,go-rwx",
 						}
+						valuesOnRemote.Add(&rfi)
+
+						// Complements the args to give to remote kubectl command
+						filteredArgs = append(filteredArgs, "-f")
+						filteredArgs = append(filteredArgs, rfi.Remote)
 						ignoreNext = true
 					}
 				}
@@ -1001,8 +1031,44 @@ var clusterKubectlCommand = cli.Command{
 		if len(filteredArgs) > 0 {
 			cmdStr += ` ` + strings.Join(filteredArgs, " ")
 		}
-		return executeCommand(cmdStr, valuesOnRemote, outputs.DISPLAY)
+		err = executeCommand(cmdStr, valuesOnRemote, outputs.DISPLAY)
+		if deleteLocalFile != "" {
+			derr := os.Remove(deleteLocalFile)
+			if derr != nil {
+				logrus.Errorf(fmt.Sprintf("failed to remove file '%s': %v", deleteLocalFile, derr))
+			}
+		}
+		return err
 	},
+}
+
+// captureStringFromPipe returns a string containing piped text
+func captureStringFromPipe() (string, error) {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return "", err
+	}
+
+	// Checks if we have a pipe
+	if info.Mode()&os.ModeCharDevice == os.ModeCharDevice || info.Size() <= 0 {
+		return "", scerr.InvalidRequestError("the command is intended to work with pipes")
+	}
+	out, err := ioutil.ReadAll(os.Stdin)
+	if err != nil {
+		return "", err
+	}
+
+	file, err := ioutil.TempFile("", "safescale.")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = file.Close() }()
+
+	_, err = file.Write(out)
+	if err != nil {
+		return "", err
+	}
+	return file.Name(), nil
 }
 
 var clusterHelmCommand = cli.Command{
@@ -1076,6 +1142,8 @@ var clusterHelmCommand = cli.Command{
 							rfc := RemoteFileItem{
 								Local:  localFile,
 								Remote: fmt.Sprintf("%s/helm_values_%d.%s.%d.tmp", utils.TempFolder, idx+1, clientID, time.Now().UnixNano()),
+								RemoteOwner: "cladm",
+								RemoteRights: "u+rwx,go-rwx",
 							}
 							valuesOnRemote.Add(&rfc)
 							filteredArgs = append(filteredArgs, "-f")
@@ -1442,7 +1510,7 @@ var clusterNodeListCommand = cli.Command{
 			host, err := hostClt.Inspect(i, temporal.GetExecutionTimeout())
 			if err != nil {
 				msg := fmt.Sprintf("failed to get data for node '%s': %s. Ignoring.", i, err.Error())
-				//fmt.Println(msg)
+				// fmt.Println(msg)
 				logrus.Warnln(msg)
 				continue
 			}
@@ -1566,7 +1634,7 @@ var clusterNodeStartCommand = cli.Command{
 	Aliases: []string{"unfreeze"},
 	Usage:   "node start CLUSTERNAME HOSTNAME",
 
-	//Help: &cli.HelpContent{
+	// Help: &cli.HelpContent{
 	// 		Usage: `
 	// Usage: {{.ProgName}} [options] cluster <clustername> node <nodename> start|unfreeze`,
 	// 		Options: []string{`

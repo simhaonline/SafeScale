@@ -19,6 +19,7 @@ package openstack
 import (
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/CS-SI/SafeScale/lib/utils/data"
 	"github.com/CS-SI/SafeScale/lib/utils/scerr"
@@ -46,7 +47,7 @@ import (
 // RouterRequest represents a router request
 type RouterRequest struct {
 	Name string `json:"name,omitempty"`
-	//NetworkID is the Network ID which the router gateway is connected to.
+	// NetworkID is the Network ID which the router gateway is connected to.
 	NetworkID string `json:"network_id,omitempty"`
 }
 
@@ -54,7 +55,7 @@ type RouterRequest struct {
 type Router struct {
 	ID   string `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
-	//NetworkID is the Network ID which the router gateway is connected to.
+	// NetworkID is the Network ID which the router gateway is connected to.
 	NetworkID string `json:"network_id,omitempty"`
 }
 
@@ -62,11 +63,11 @@ type Router struct {
 type Subnet struct {
 	ID   string `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
-	//IPVersion is IPv4 or IPv6 (see IPVersion)
+	// IPVersion is IPv4 or IPv6 (see IPVersion)
 	IPVersion ipversion.Enum `json:"ip_version,omitempty"`
-	//Mask mask in CIDR notation
+	// Mask mask in CIDR notation
 	Mask string `json:"mask,omitempty"`
-	//NetworkID id of the parent network
+	// NetworkID id of the parent network
 	NetworkID string `json:"network_id,omitempty"`
 }
 
@@ -197,7 +198,7 @@ func (s *Stack) GetNetwork(id string) (*resources.Network, error) {
 		newNet.Name = network.Name
 		newNet.CIDR = sn.Mask
 		newNet.IPVersion = sn.IPVersion
-		//net.GatewayID = network.GatewayId
+		// net.GatewayID = network.GatewayId
 		return newNet, nil
 	}
 
@@ -309,7 +310,7 @@ func (s *Stack) DeleteNetwork(id string) error {
 }
 
 // CreateGateway creates a public Gateway for a private network
-func (s *Stack) CreateGateway(req resources.GatewayRequest) (host *resources.Host, userData *userdata.Content, err error) {
+func (s *Stack) CreateGateway(req resources.GatewayRequest, sizing *resources.SizingRequirements) (host *resources.Host, userData *userdata.Content, err error) {
 	if s == nil {
 		return nil, nil, scerr.InvalidInstanceError()
 	}
@@ -322,7 +323,7 @@ func (s *Stack) CreateGateway(req resources.GatewayRequest) (host *resources.Hos
 	if req.Network == nil {
 		return nil, nil, scerr.InvalidParameterError("req.Network", "cannot be nil")
 	}
-	gwname := req.Name
+	gwname := strings.Split(req.Name, ".")[0]   // req.Name may contain a FQDN...
 	if gwname == "" {
 		gwname = "gw-" + req.Network.Name
 	}
@@ -334,11 +335,15 @@ func (s *Stack) CreateGateway(req resources.GatewayRequest) (host *resources.Hos
 	hostReq := resources.HostRequest{
 		ImageID:      req.ImageID,
 		KeyPair:      req.KeyPair,
+		HostName:     req.Name,
 		ResourceName: gwname,
 		TemplateID:   req.TemplateID,
 		Networks:     []*resources.Network{req.Network},
 		PublicIP:     true,
 		Password:     password,
+	}
+	if sizing != nil && sizing.MinDiskSize > 0 {
+		hostReq.DiskSize = sizing.MinDiskSize
 	}
 	host, userData, err = s.CreateHost(hostReq)
 	if err != nil {

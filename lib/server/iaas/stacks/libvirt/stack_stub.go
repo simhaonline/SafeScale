@@ -1,4 +1,4 @@
-//+build !libvirt
+// +build !libvirt
 
 /*
  * Copyright 2018-2020, CS Systemes d'Information, http://www.c-s.fr
@@ -111,7 +111,7 @@ func (s *Stack) DeleteNetwork(id string) error {
 }
 
 // CreateGateway stub
-func (s *Stack) CreateGateway(req resources.GatewayRequest) (*resources.Host, *userdata.Content, error) {
+func (s *Stack) CreateGateway(req resources.GatewayRequest, sizing *resources.SizingRequirements) (*resources.Host, *userdata.Content, error) {
 	return nil, nil, scerr.Errorf(fmt.Sprintf(errorStr), nil)
 }
 

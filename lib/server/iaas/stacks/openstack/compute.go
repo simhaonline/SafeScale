@@ -266,7 +266,6 @@ func (s *Stack) ListTemplates() ([]resources.HostTemplate, error) {
 		case scerr.ErrTimeout:
 			return nil, err
 		default:
-			spew.Dump(pager.Err)
 			return nil, scerr.Wrap(err, "error listing templates")
 		}
 	}
@@ -435,34 +434,31 @@ func (s *Stack) InspectHost(hostParam interface{}) (host *resources.Host, err er
 
 	defer concurrency.NewTracer(nil, fmt.Sprintf("(%s)", hostRef), true).WithStopwatch().GoingIn().OnExitTrace()()
 
-	server, err := s.queryServer(host.ID)
+	serverState, err := s.GetHostState(host.ID)
 	if err != nil {
 		return nil, err
 	}
 
-	err = s.complementHost(host, server)
-	if err != nil {
-		return nil, err
-	}
+	switch serverState {
+	case hoststate.STARTED, hoststate.STOPPED:
+		server, err := s.waitHostState(host.ID, []hoststate.Enum{hoststate.STARTED, hoststate.STOPPED}, 2*temporal.GetBigDelay())
+		if err != nil {
+			return nil, err
+		}
 
-	if !host.OK() {
-		logrus.Warnf("[TRACE] Unexpected host status: %s", spew.Sdump(host))
+		err = s.complementHost(host, server)
+		if err != nil {
+			return nil, err
+		}
+
+		if !host.OK() {
+			logrus.Warnf("[TRACE] Unexpected host status: %s", spew.Sdump(host))
+		}
+	default:
+		host.LastState = serverState
 	}
 
 	return host, nil
-}
-
-func (s *Stack) queryServer(id string) (server *servers.Server, err error) {
-	server, err = s.waitHostState(id, []hoststate.Enum{hoststate.STARTED, hoststate.STOPPED}, 2*temporal.GetBigDelay())
-	if err != nil {
-		return nil, err
-	}
-
-	if server == nil {
-		return nil, resources.ResourceNotFoundError("host", id)
-	}
-
-	return server, nil
 }
 
 // interpretAddresses converts addresses returned by the OpenStack driver
@@ -525,9 +521,14 @@ func (s *Stack) complementHost(host *resources.Host, server *servers.Server) err
 	}
 
 	host.LastState = toHostState(server.Status)
-	if host.LastState != hoststate.STARTED {
-		logrus.Warnf("[TRACE] Unexpected host's last state: %v", host.LastState)
-	}
+	// VPL: I don't get the point of this...
+	//switch host.LastState {
+	//case hoststate.STARTED, hoststate.STOPPED:
+	//	// Continue
+	//default:
+	//	logrus.Warnf("[TRACE] Unexpected host's last state: %v", host.LastState)
+	//}
+	// ENDVPL
 
 	// Updates Host Property propsv1.HostDescription
 	err := host.Properties.LockForWrite(hostproperty.DescriptionV1).ThenUse(func(clonable data.Clonable) error {
@@ -1108,6 +1109,107 @@ func (s *Stack) waitHostState(hostParam interface{}, states []hoststate.Enum, ti
 	return server, nil
 }
 
+// waitHostState waits an host achieve ready state
+// hostParam can be an ID of host, or an instance of *resources.Host; any other type will return an utils.ErrInvalidParameter
+func (s *Stack) getHostState(hostParam interface{}, timeout time.Duration) (_ hoststate.Enum, err error) {
+	if s == nil {
+		return hoststate.ERROR, scerr.InvalidInstanceError()
+	}
+
+	var host *resources.Host
+
+	switch hostParam := hostParam.(type) {
+	case string:
+		host = resources.NewHost()
+		host.ID = hostParam
+	case *resources.Host:
+		host = hostParam
+	}
+	if host == nil {
+		return hoststate.ERROR, scerr.InvalidParameterError("hostParam", "must be a not-empty string or a *resources.Host!")
+	}
+
+	hostRef := host.Name
+	if hostRef == "" {
+		hostRef = host.ID
+	}
+
+	defer concurrency.NewTracer(nil, fmt.Sprintf("(%s)", hostRef), true).WithStopwatch().GoingIn().OnExitTrace()()
+	lastState := hoststate.UNKNOWN
+
+	retryErr := retry.WhileUnsuccessful(
+		func() error {
+			server, err := servers.Get(s.ComputeClient, host.ID).Extract()
+			if err != nil {
+				switch err.(type) {
+				case gc.ErrDefault404:
+					// If error is "resource not found", we want to return GopherCloud error as-is to be able
+					// to behave differently in this special case. To do so, stop the retry
+					return scerr.AbortedError("", resources.ResourceNotFoundError("host", host.ID))
+				case gc.ErrDefault408:
+					// server timeout, retries
+					return err
+				case gc.ErrDefault409:
+					// specific handling for error 409
+					return scerr.AbortedError("", scerr.Errorf(fmt.Sprintf("error getting host '%s': %s", host.ID, ProviderErrorToString(err)), err))
+				case gc.ErrDefault503:
+					// Service Unavailable, retry
+					return err
+				case gc.ErrDefault500:
+					// When the response is "Internal Server Error", retries
+					return err
+				}
+
+				errorCode, failed := GetUnexpectedGophercloudErrorCode(err)
+				if failed == nil {
+					switch errorCode {
+					case 408:
+						return err
+					case 429:
+						return err
+					case 500:
+						return err
+					case 503:
+						return err
+					default:
+						return scerr.AbortedError(fmt.Sprintf("error getting host '%s': code: %d, reason: %s", host.ID, errorCode, err), err)
+					}
+				}
+
+				if IsServiceUnavailableError(err) {
+					return err
+				}
+
+				// Any other error stops the retry
+				return scerr.AbortedError(fmt.Sprintf("error getting host '%s': %s", host.ID, ProviderErrorToString(err)), err)
+			}
+
+			if server == nil {
+				return scerr.Errorf("error getting host, nil response from gophercloud", nil)
+			}
+
+			lastState = toHostState(server.Status)
+
+			return nil
+		},
+		temporal.GetMinDelay(),
+		timeout,
+	)
+	if retryErr != nil {
+		if _, ok := retryErr.(retry.ErrTimeout); ok {
+			return hoststate.ERROR, resources.TimeoutError(fmt.Sprintf("timeout waiting to get host '%s' information after %v", host.Name, timeout), timeout)
+		}
+
+		if aborted, ok := retryErr.(retry.ErrAborted); ok {
+			return hoststate.ERROR, aborted.Cause()
+		}
+
+		return hoststate.ERROR, retryErr
+	}
+
+	return lastState, nil
+}
+
 // GetHostState returns the current state of host identified by id
 // hostParam can be a string or an instance of *resources.Host; any other type will return an scerr.InvalidParameterError
 func (s *Stack) GetHostState(hostParam interface{}) (hoststate.Enum, error) {
@@ -1117,11 +1219,9 @@ func (s *Stack) GetHostState(hostParam interface{}) (hoststate.Enum, error) {
 
 	defer concurrency.NewTracer(nil, "", false).WithStopwatch().GoingIn().OnExitTrace()()
 
-	host, err := s.InspectHost(hostParam)
-	if err != nil {
-		return hoststate.ERROR, err
-	}
-	return host.LastState, nil
+	hostState, err := s.getHostState(hostParam, temporal.GetDefaultDelay())
+
+	return hostState, err
 }
 
 // ListHosts lists all hosts
@@ -1188,18 +1288,15 @@ func (s *Stack) getFloatingIP(hostID string) (*floatingips.FloatingIP, error) {
 		},
 		temporal.GetDefaultDelay()*2,
 	)
-
-	if retryErr != nil {
-		return nil, scerr.Wrap(retryErr, fmt.Sprintf("No floating IP found for host '%s': %s", hostID, ProviderErrorToString(retryErr)))
-	}
-
 	if len(fips) == 0 {
-		return nil, scerr.NotFoundError(fmt.Sprintf("No floating IP found for host '%s'", hostID))
+		if retryErr != nil {
+			return nil, scerr.NotFoundError(fmt.Sprintf("no floating IP found for host '%s': %s", hostID, ProviderErrorToString(retryErr)))
+		}
+		return nil, scerr.NotFoundError(fmt.Sprintf("no floating IP found for host '%s'", hostID))
 	}
 	if len(fips) > 1 {
 		return nil, scerr.InconsistentError(fmt.Sprintf("Configuration error, more than one Floating IP associated to host '%s'", hostID))
 	}
-
 	return &fips[0], nil
 }
 
@@ -1214,23 +1311,25 @@ func (s *Stack) DeleteHost(id string) error {
 
 	defer concurrency.NewTracer(nil, fmt.Sprintf("(%s", id), true).WithStopwatch().GoingIn().OnExitTrace()()
 
+	// Delete floating IP address if there is one
 	if s.cfgOpts.UseFloatingIP {
 		fip, err := s.getFloatingIP(id)
-		if err == nil {
-			if fip != nil {
-				err = floatingips.DisassociateInstance(s.ComputeClient, id, floatingips.DisassociateOpts{
-					FloatingIP: fip.IP,
-				}).ExtractErr()
-				if err != nil {
-					return scerr.Wrap(err, fmt.Sprintf("error deleting host '%s' : %s", id, ProviderErrorToString(err)))
-				}
-				err = floatingips.Delete(s.ComputeClient, fip.ID).ExtractErr()
-				if err != nil {
-					return scerr.Wrap(err, fmt.Sprintf("error deleting host '%s' : %s", id, ProviderErrorToString(err)))
-				}
+		if err != nil {
+			switch err.(type) {
+			case scerr.ErrNotFound:
+				// Continue
+			default:
+				return scerr.Wrap(err, fmt.Sprintf("error retrieving floating ip for '%s'", id))
 			}
-		} else {
-			return scerr.Wrap(err, fmt.Sprintf("error retrieving floating ip for '%s'", id))
+		} else if fip != nil {
+			err = floatingips.DisassociateInstance(s.ComputeClient, id, floatingips.DisassociateOpts{FloatingIP: fip.IP}).ExtractErr()
+			if err != nil {
+					return scerr.Wrap(err, fmt.Sprintf("error deleting host '%s' : %s", id, ProviderErrorToString(err)))
+				}
+			err = floatingips.Delete(s.ComputeClient, fip.ID).ExtractErr()
+			if err != nil {
+					return scerr.Wrap(err, fmt.Sprintf("error deleting host '%s' : %s", id, ProviderErrorToString(err)))
+				}
 		}
 	}
 

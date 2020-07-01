@@ -73,8 +73,8 @@ func minimumRequiredServers(task concurrency.Task, foreman control.Foreman) (int
 	return masterCount, privateNodeCount, 0
 }
 
-func gatewaySizing(task concurrency.Task, foreman control.Foreman) pb.HostDefinition {
-	return pb.HostDefinition{
+func gatewaySizing(task concurrency.Task, foreman control.Foreman) *pb.HostDefinition {
+	return &pb.HostDefinition{
 		Sizing: &pb.HostSizing{
 			MinCpuCount: 2,
 			MaxCpuCount: 4,
@@ -86,8 +86,8 @@ func gatewaySizing(task concurrency.Task, foreman control.Foreman) pb.HostDefini
 	}
 }
 
-func masterSizing(task concurrency.Task, foreman control.Foreman) pb.HostDefinition {
-	return pb.HostDefinition{
+func masterSizing(task concurrency.Task, foreman control.Foreman) *pb.HostDefinition {
+	return &pb.HostDefinition{
 		Sizing: &pb.HostSizing{
 			MinCpuCount: 4,
 			MaxCpuCount: 8,
@@ -99,8 +99,8 @@ func masterSizing(task concurrency.Task, foreman control.Foreman) pb.HostDefinit
 	}
 }
 
-func nodeSizing(task concurrency.Task, foreman control.Foreman) pb.HostDefinition {
-	return pb.HostDefinition{
+func nodeSizing(task concurrency.Task, foreman control.Foreman) *pb.HostDefinition {
+	return &pb.HostDefinition{
 		Sizing: &pb.HostSizing{
 			MinCpuCount: 4,
 			MaxCpuCount: 8,
@@ -185,11 +185,9 @@ func getNodeInstallationScript(task concurrency.Task, foreman control.Foreman, h
 	data := map[string]interface{}{}
 
 	switch hostType {
-	case nodetype.Gateway:
-		script = "swarm_install_gateway.sh"
 	case nodetype.Master:
 		script = "swarm_install_master.sh"
-	case nodetype.Node:
+	case nodetype.Gateway, nodetype.Node:
 		script = "swarm_install_node.sh"
 	}
 	return script, data

@@ -17,6 +17,7 @@
 package propertiesv1
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources/enums/hostproperty"
@@ -34,6 +35,7 @@ type HostDescription struct {
 	Updated time.Time `json:"modified,omitempty"` // tells the last time the host has been modified
 	Purpose string    `json:"purpose,omitempty"`  // contains a description of the use of a host
 	Tenant  string    `json:"tenant"`             // contains the tenant name used to create the host
+	Domain  string    `json:"domain,omitempty"` // contains the domain used to define host FQDN
 }
 
 // NewHostDescription ...
@@ -317,6 +319,53 @@ func (hv *HostVolumes) Content() data.Clonable {
 // satisfies interface data.Clonable
 func (hv *HostVolumes) Clone() data.Clonable {
 	return NewHostVolumes().Replace(hv)
+}
+
+// FIXME Improve this function...
+func (hv *HostVolumes) AddHostVolume(hostVolID string, hostVolName string, attachmentID string, volumeUUID string) {
+	if hostVolID == "" || hostVolName == "" || attachmentID == "" || volumeUUID == "" {
+		panic("Invalid input")
+	}
+
+	hv.VolumesByID[hostVolID] = &HostVolume{
+		AttachID: attachmentID,
+		Device:   volumeUUID,
+	}
+
+	hv.VolumesByName[hostVolName] = hostVolID
+	hv.VolumesByDevice[volumeUUID] = hostVolID
+	hv.DevicesByID[hostVolID] = volumeUUID
+}
+
+// FIXME Improve this function
+func (hv *HostVolumes) UpdateUUID(hostVolID string, volumeUUID string) error {
+	if hostVolID == "" || volumeUUID == "" {
+		panic("Invalid input")
+	}
+
+	volById, ok := hv.VolumesByID[hostVolID]
+	if !ok {
+		return fmt.Errorf("volume with id [%s] not found", hostVolID)
+	}
+	previous := volById.Device
+	volById.Device = volumeUUID
+
+	delete(hv.VolumesByDevice, previous)
+	hv.VolumesByDevice[volumeUUID] = hostVolID
+	hv.DevicesByID[hostVolID] = volumeUUID
+
+	return nil
+}
+
+// Delete removes a volume and its attachments info
+func (hv *HostVolumes) Delete(volumeID string, volumeName string, device string) {
+	if volumeID == "" || volumeName == "" || device == "" {
+		panic("Invalid input")
+	}
+	delete(hv.VolumesByID, volumeID)
+	delete(hv.VolumesByName, volumeName)
+	delete(hv.VolumesByDevice, device)
+	delete(hv.DevicesByID, volumeID)
 }
 
 // Replace ...

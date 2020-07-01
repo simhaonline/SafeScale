@@ -82,8 +82,8 @@ func minimumRequiredServers(task concurrency.Task, foreman control.Foreman) (int
 	return masterCount, privateNodeCount, publicNodeCount
 }
 
-func gatewaySizing(task concurrency.Task, foreman control.Foreman) pb.HostDefinition {
-	return pb.HostDefinition{
+func gatewaySizing(task concurrency.Task, foreman control.Foreman) *pb.HostDefinition {
+	return &pb.HostDefinition{
 		Sizing: &pb.HostSizing{
 			MinCpuCount: 2,
 			MaxCpuCount: 4,
@@ -95,8 +95,8 @@ func gatewaySizing(task concurrency.Task, foreman control.Foreman) pb.HostDefini
 	}
 }
 
-func nodeSizing(task concurrency.Task, foreman control.Foreman) pb.HostDefinition {
-	return pb.HostDefinition{
+func nodeSizing(task concurrency.Task, foreman control.Foreman) *pb.HostDefinition {
+	return &pb.HostDefinition{
 		Sizing: &pb.HostSizing{
 			MinCpuCount: 4,
 			MaxCpuCount: 8,
@@ -167,20 +167,26 @@ func configureCluster(task concurrency.Task, foreman control.Foreman, req contro
 				}
 			}()
 
-			for _, id := range cluster.ListMasterIDs(task) {
-				err = svc.BindHostToVIP(vip, id)
+			var ids []string
+
+			defer func() {
 				if err != nil {
-					return err
-				}
-				defer func(i string) {
-					if err != nil {
+					for _, i := range ids {
 						derr := svc.UnbindHostFromVIP(vip, i)
 						if derr != nil {
 							logrus.Errorf("Cleaning up on failure, failed to delete VirtualIP: %v", derr)
 							err = scerr.AddConsequence(err, derr)
 						}
 					}
-				}(id)
+				}
+			}()
+
+			for _, id := range cluster.ListMasterIDs(task) {
+				err = svc.BindHostToVIP(vip, id)
+				if err != nil {
+					return err
+				}
+				ids = append(ids, id)
 			}
 
 			err = cluster.UpdateMetadata(task, func() error {

@@ -282,19 +282,19 @@ func (s *Stack) DeleteNetwork(ref string) error {
 }
 
 // CreateGateway creates a public Gateway for a private network
-func (s *Stack) CreateGateway(req resources.GatewayRequest) (*resources.Host, *userdata.Content, error) {
+func (s *Stack) CreateGateway(req resources.GatewayRequest, sizing *resources.SizingRequirements) (*resources.Host, *userdata.Content, error) {
 	defer concurrency.NewTracer(nil, "", true).GoingIn().OnExitTrace()()
 
 	network := req.Network
 	templateID := req.TemplateID
 	imageID := req.ImageID
 	keyPair := req.KeyPair
-	gwName := req.Name
 
 	networkLibvirt, err := getNetworkFromRef(network.ID, s.LibvirtService)
 	if err != nil {
 		return nil, nil, err
 	}
+	gwname := strings.Split(req.Name, ".")[0]   // req.Name may contain a FQDN...
 	if gwName == "" {
 		name, err := networkLibvirt.GetName()
 		if err != nil {
@@ -306,12 +306,15 @@ func (s *Stack) CreateGateway(req resources.GatewayRequest) (*resources.Host, *u
 	hostReq := resources.HostRequest{
 		ImageID:      imageID,
 		KeyPair:      keyPair,
+		HostName:     req.Name,
 		ResourceName: gwName,
 		TemplateID:   templateID,
 		Networks:     []*resources.Network{network},
 		PublicIP:     true,
 	}
-
+	if sizing != nil && sizing.MinDiskSize > 0 {
+		hostReq.DiskSize = sizing.MinDiskSize
+	}
 	host, userData, err := s.CreateHost(hostReq)
 	if err != nil {
 		return nil, nil, scerr.Errorf(fmt.Sprintf("failed to create gateway host : %s", err.Error()), err)
