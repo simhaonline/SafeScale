@@ -34,6 +34,7 @@ import (
 type Tracer struct {
 	taskSig      string
 	fileName     string
+	lineNumber   int
 	funcName     string
 	callerParams string
 	enabled      bool
@@ -65,9 +66,10 @@ func NewTracer(t Task, message string, enabled bool) *Tracer {
 		tracer.callerParams = "()"
 	}
 
-	if pc, file, _, ok := runtime.Caller(1); ok {
+	if pc, file, line, ok := runtime.Caller(1); ok {
 		tracer.fileName = strings.Replace(file, getPartToRemove(), "", 1)
 		if f := runtime.FuncForPC(pc); f != nil {
+			tracer.lineNumber = line
 			tracer.funcName = filepath.Base(f.Name())
 		}
 	}
@@ -163,8 +165,8 @@ func (t *Tracer) buildMessage() string {
 	}
 
 	message := t.taskSig
-	if _, _, line, ok := runtime.Caller(1); ok {
-		message += " " + t.funcName + t.callerParams + " [" + t.fileName + ":" + strconv.Itoa(line) + "]"
+	if _, _, _, ok := runtime.Caller(1); ok {
+		message += " " + t.funcName + t.callerParams + " [" + t.fileName + ":" + strconv.Itoa(t.lineNumber) + "]"
 	}
 	return message
 }
