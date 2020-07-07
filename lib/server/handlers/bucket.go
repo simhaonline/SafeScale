@@ -19,6 +19,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"github.com/graymeta/stow"
 	"regexp"
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
@@ -80,7 +81,7 @@ func (handler *BucketHandler) Create(ctx context.Context, name string) (err erro
 
 	bucket, err := handler.service.GetBucket(name)
 	if err != nil {
-		if err.Error() != "not found" {
+		if err != stow.ErrNotFound { // FIXME: Implementation detail
 			return err
 		}
 	}
@@ -133,13 +134,20 @@ func (handler *BucketHandler) Inspect(ctx context.Context, name string) (mb *res
 
 	b, err := handler.service.GetBucket(name)
 	if err != nil {
-		if err.Error() == "not found" {
+		if err == stow.ErrNotFound { // FIXME: Implementation detail
 			return nil, resources.ResourceNotFoundError("bucket", name)
 		}
+
 		return nil, err
 	}
+
+	bucketName, err := b.GetName()
+	if err != nil {
+		return nil, err
+	}
+
 	mb = &resources.Bucket{
-		Name: b.GetName(),
+		Name: bucketName,
 	}
 	return mb, nil
 }

@@ -18,6 +18,7 @@ package objectstorage
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 	"io"
@@ -60,9 +61,13 @@ func newObject(bucket *bucket, objectName string) (*object, error) {
 		Name:   objectName,
 	}
 	item, err := bucket.container.Item(objectName)
-	if err == nil {
-		o.item = item
+	if err != nil {
+		if err != stow.ErrNotFound {
+			return nil, err
+		}
 	}
+
+	o.item = item
 	return o, nil
 }
 
@@ -77,8 +82,12 @@ func newObjectFromStow(bucket *bucket, item stow.Item) *object {
 }
 
 // Stored return true if the object exists in Object Storage
-func (o *object) Stored() bool {
-	return o.item != nil
+func (o *object) Stored() (bool, error) {
+	if o == nil {
+		return false, scerr.InvalidInstanceError()
+	}
+
+	return o.item != nil, nil
 }
 
 // Reload reloads the data of the Object from the Object Storage
@@ -96,7 +105,7 @@ func (o *object) Reload() error {
 	return o.reloadFromItem(item)
 }
 
-// reloadFromItem reloads objet instance with stow.Item
+// reloadFromItem reloads object instance with stow.Item
 func (o *object) reloadFromItem(item stow.Item) error {
 	o.item = item
 	newMetadata, err := item.Metadata()
@@ -109,6 +118,9 @@ func (o *object) reloadFromItem(item stow.Item) error {
 
 // Read reads the content of the object from Object Storage and writes it in 'target'
 func (o *object) Read(target io.Writer, from, to int64) error {
+	if o == nil {
+		return scerr.InvalidInstanceError()
+	}
 	if target == nil {
 		return scerr.InvalidInstanceError()
 	}
@@ -127,7 +139,10 @@ func (o *object) Read(target io.Writer, from, to int64) error {
 		return err
 	}
 
-	size := o.GetSize()
+	size, err := o.GetSize()
+	if err != nil {
+		return err
+	}
 	if size < 0 {
 		return fmt.Errorf("unknown size of object")
 	}
@@ -159,13 +174,14 @@ func (o *object) Read(target io.Writer, from, to int64) error {
 	} else {
 		buf := make([]byte, seekTo)
 		if _, err := io.ReadAtLeast(source, buf, int(seekTo)); err != nil {
-			log.Fatal(err)
+			log.Error(err)
+			return err
 		}
 
 		bufbis := make([]byte, length)
 		if _, err := io.ReadAtLeast(source, bufbis, int(length)); err != nil {
-			log.Println("error ")
-			log.Fatal(err)
+			log.Error(err)
+			return err
 		}
 
 		readerbis := bytes.NewReader(bufbis)
@@ -191,7 +207,12 @@ func (o *object) Write(source io.Reader, sourceSize int64) error {
 
 	defer concurrency.NewTracer(nil, fmt.Sprintf("(%d)", sourceSize), false /*Trace.Controller*/).GoingIn().OnExitTrace()()
 
-	item, err := o.bucket.container.Put(o.Name, source, sourceSize, o.GetMetadata())
+	metaData, err := o.GetMetadata()
+	if err != nil {
+		return err
+	}
+
+	item, err := o.bucket.container.Put(o.Name, source, sourceSize, metaData)
 	if err != nil {
 		return err
 	}
@@ -207,7 +228,12 @@ func (o *object) WriteMultiPart(source io.Reader, sourceSize int64, chunkSize in
 
 	defer concurrency.NewTracer(nil, fmt.Sprintf("(%d, %d)", sourceSize, chunkSize), false /*Trace.Controller*/).GoingIn().OnExitTrace()()
 
-	metadataCopy := o.GetMetadata().Clone()
+	metaData, err := o.GetMetadata()
+	if err != nil {
+		return err
+	}
+
+	metadataCopy := metaData.Clone()
 
 	var chunkIndex int
 	remaining := sourceSize
@@ -257,6 +283,9 @@ func writeChunk(
 
 // Delete deletes the object from Object Storage
 func (o *object) Delete() error {
+	if o == nil {
+		return scerr.InvalidInstanceError()
+	}
 	if o.item == nil {
 		return scerr.InvalidInstanceError()
 	}
@@ -272,16 +301,26 @@ func (o *object) Delete() error {
 }
 
 // ForceAddMetadata overwrites the metadata entries of the object by the ones provided in parameter
-func (o *object) ForceAddMetadata(newMetadata ObjectMetadata) {
+func (o *object) ForceAddMetadata(newMetadata ObjectMetadata) error {
+	if o == nil {
+		return scerr.InvalidInstanceError()
+	}
+
 	defer concurrency.NewTracer(nil, "", false /*Trace.Controller*/).GoingIn().OnExitTrace()()
 
 	for k, v := range newMetadata {
 		o.Metadata[k] = v
 	}
+
+	return nil
 }
 
 // AddMetadata adds missing entries in object metadata
-func (o *object) AddMetadata(newMetadata ObjectMetadata) {
+func (o *object) AddMetadata(newMetadata ObjectMetadata) error {
+	if o == nil {
+		return scerr.InvalidInstanceError()
+	}
+
 	defer concurrency.NewTracer(nil, "", false /*Trace.Controller*/).GoingIn().OnExitTrace()()
 
 	for k, v := range newMetadata {
@@ -290,18 +329,30 @@ func (o *object) AddMetadata(newMetadata ObjectMetadata) {
 			o.Metadata[k] = v
 		}
 	}
+
+	return nil
 }
 
 // ReplaceMetadata replaces object metadata with the ones provided in parameter
-func (o *object) ReplaceMetadata(newMetadata ObjectMetadata) {
+func (o *object) ReplaceMetadata(newMetadata ObjectMetadata) error {
+	if o == nil {
+		return scerr.InvalidInstanceError()
+	}
+
 	defer concurrency.NewTracer(nil, "", false /*Trace.Controller*/).GoingIn().OnExitTrace()()
 
 	o.Metadata = newMetadata
+
+	return nil
 }
 
 // GetName returns the name of the object
-func (o *object) GetName() string {
-	return o.Name
+func (o *object) GetName() (string, error) {
+	if o == nil {
+		return "", scerr.InvalidInstanceError()
+	}
+
+	return o.Name, nil
 }
 
 // GetLastUpdate returns the date of last update
@@ -317,36 +368,49 @@ func (o *object) GetLastUpdate() (time.Time, error) {
 }
 
 // GetMetadata returns the metadata of the object in Object Storage
-func (o *object) GetMetadata() ObjectMetadata {
-	return o.Metadata.Clone()
+func (o *object) GetMetadata() (ObjectMetadata, error) {
+	if o == nil {
+		return nil, scerr.InvalidInstanceError()
+	}
+
+	return o.Metadata.Clone(), nil
 }
 
 // GetSize returns the size of the content of the object
-func (o *object) GetSize() int64 {
+func (o *object) GetSize() (int64, error) {
 	if o.item != nil {
 		size, err := o.item.Size()
 		if err == nil {
-			return size
+			return size, nil
 		}
 	}
-	return -1
+	return -1, errors.New("metadata item without size")
 }
 
 // GetETag returns the value of the ETag (+/- md5sum of the content...)
-func (o *object) GetETag() string {
+func (o *object) GetETag() (string, error) {
+	if o == nil {
+		return "", scerr.InvalidInstanceError()
+	}
+
 	if o.item != nil {
 		etag, err := o.item.ETag()
 		if err == nil {
-			return etag
+			return etag, nil
 		}
 	}
-	return ""
+	return "", errors.New("metadata item without etag")
 }
 
 // GetID ...
-func (o *object) GetID() string {
-	if o.item != nil {
-		return o.item.ID()
+func (o *object) GetID() (string, error) {
+	if o == nil {
+		return "", scerr.InvalidInstanceError()
 	}
-	return ""
+
+	if o.item != nil {
+		return o.item.ID(), nil
+	}
+
+	return "", errors.New("metadata item without id")
 }

@@ -24,6 +24,7 @@ import (
 	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 	"github.com/CS-SI/SafeScale/lib/utils/serialize"
 	"github.com/CS-SI/SafeScale/lib/utils/temporal"
+	"github.com/graymeta/stow"
 )
 
 const (
@@ -166,6 +167,11 @@ func (m *Metadata) Reload(task concurrency.Task) error {
 				if _, ok := innerErr.(scerr.ErrNotFound); ok {
 					return retry.AbortedError("not found", innerErr)
 				}
+
+				if innerErr == stow.ErrNotFound { // FIXME: Implementation detail
+					return retry.AbortedError("not found", innerErr)
+				}
+
 				return innerErr
 			}
 			return nil

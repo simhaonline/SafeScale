@@ -190,7 +190,10 @@ func (h *host) SSHConfig(name string) (*system.SSHConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	sshCfg := srvutils.ToSystemSSHConfig(pbSSHCfg)
+	sshCfg, err := srvutils.ToSystemSSHConfig(pbSSHCfg)
+	if err != nil {
+		return nil, err
+	}
 	// if err == nil {
 	// 	nerr := sshCfgCache.Set(name, sshCfg)
 	// 	if nerr != nil {

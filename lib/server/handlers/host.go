@@ -667,7 +667,6 @@ func (handler *HostHandler) Create(
 	_, err = sshCfg.WaitServerReady("phase1", temporal.GetHostCreationTimeout())
 	if err != nil {
 		derr := err
-		err = nil
 		if client.IsTimeoutError(derr) {
 			return nil, scerr.Wrap(derr, fmt.Sprintf("timeout waiting host '%s' to become ready", host.Name))
 		}
@@ -683,19 +682,19 @@ func (handler *HostHandler) Create(
 
 	// Updates host link with networks
 	for _, i := range networks {
-		err = i.Properties.LockForWrite(networkproperty.HostsV1).ThenUse(func(clonable data.Clonable) error {
+		merr := i.Properties.LockForWrite(networkproperty.HostsV1).ThenUse(func(clonable data.Clonable) error {
 			networkHostsV1 := clonable.(*propsv1.NetworkHosts)
 			networkHostsV1.ByName[host.Name] = host.ID
 			networkHostsV1.ByID[host.ID] = host.Name
 			return nil
 		})
-		if err != nil {
-			logrus.Errorf(err.Error())
+		if merr != nil {
+			logrus.Errorf(merr.Error())
 			continue
 		}
-		_, err = metadata.SaveNetwork(handler.service, i)
-		if err != nil {
-			logrus.Errorf(err.Error())
+		_, merr = metadata.SaveNetwork(handler.service, i)
+		if merr != nil {
+			logrus.Errorf(merr.Error())
 		}
 	}
 
@@ -706,7 +705,11 @@ func (handler *HostHandler) Create(
 	}
 
 	filepath := utils.TempFolder + "/user_data.phase2.sh"
-	err = install.UploadStringToRemoteFile(string(userDataPhase2), srvutils.ToPBHost(host), filepath, "", "", "")
+	pbHost, err := srvutils.ToPBHost(host)
+	if err != nil {
+		return nil, err
+	}
+	err = install.UploadStringToRemoteFile(string(userDataPhase2), pbHost, filepath, "", "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -736,7 +739,15 @@ func (handler *HostHandler) Create(
 				logrus.Warnf("Remote SSH service response: errorcode %d, '%s', '%s'", retcode, stdout, stderr)
 			}
 
-			return inErr
+			if retcode != 0 {
+				logrus.Warnf("Remote SSH service response: errorcode %d, '%s', '%s'", retcode, stdout, stderr)
+				if inErr != nil {
+					return inErr
+				}
+				return fmt.Errorf("Remote SSH service response: errorcode %d", retcode)
+			} else {
+				return nil
+			}
 		},
 		temporal.GetHostTimeout(),
 		func(t retry.Try, v verdict.Enum) {
@@ -992,7 +1003,7 @@ func (handler *HostHandler) Inspect(ctx context.Context, ref string) (host *reso
 func retryOnCommunicationFailure(fn func() error, duration time.Duration) error {
 	// default duration is 10 seconds
 	if duration <= 0 {
-		duration = 10*time.Second
+		duration = 10 * time.Second
 	}
 
 	err := retry.WhileUnsuccessfulDelay1Second(
@@ -1038,6 +1049,7 @@ func normalizeError(in error) (err error) {
 	}
 	return nil
 }
+
 // Delete deletes host referenced by ref
 func (handler *HostHandler) Delete(ctx context.Context, ref string) (err error) {
 	tracer := concurrency.NewTracer(nil, fmt.Sprintf("('%s')", ref), true).WithStopwatch().GoingIn()
@@ -1169,7 +1181,7 @@ func (handler *HostHandler) Delete(ctx context.Context, ref string) (err error) 
 	// Conditions are met, delete host
 	var (
 		deleteMetadataOnly bool
-		moreTimeNeeded bool
+		moreTimeNeeded     bool
 	)
 	err = retryOnCommunicationFailure(
 		func() error {

@@ -18,6 +18,8 @@ package metadata
 
 import (
 	"fmt"
+	"github.com/graymeta/stow"
+	"github.com/sirupsen/logrus"
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
 	"github.com/CS-SI/SafeScale/lib/server/iaas/resources"
@@ -148,7 +150,12 @@ func (mv *Volume) ReadByReference(ref string) (err error) {
 		}
 	}
 	if err != nil {
-		return scerr.NotFoundErrorWithCause(fmt.Sprintf("reference %s not found", ref), scerr.ErrListError(errors))
+		if err == stow.ErrNotFound {
+			return scerr.NotFoundErrorWithCause(fmt.Sprintf("reference %s not found", ref), scerr.ErrListError(errors))
+		}
+
+		logrus.Warn(err)
+		return err
 	}
 
 	return nil
@@ -366,6 +373,11 @@ func LoadVolume(svc iaas.Service, ref string) (mv *Volume, err error) {
 				if _, ok := innerErr.(scerr.ErrNotFound); ok {
 					return retry.AbortedError("no metadata found", innerErr)
 				}
+
+				if innerErr == stow.ErrNotFound {
+					return retry.AbortedError("no metadata found", innerErr)
+				}
+
 				return innerErr
 			}
 			return nil

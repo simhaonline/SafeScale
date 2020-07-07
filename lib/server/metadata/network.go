@@ -18,6 +18,7 @@ package metadata
 
 import (
 	"fmt"
+	"github.com/graymeta/stow"
 
 	"github.com/sirupsen/logrus"
 
@@ -181,7 +182,12 @@ func (m *Network) ReadByReference(ref string) (err error) {
 	}
 
 	if err != nil {
-		return scerr.NotFoundErrorWithCause(fmt.Sprintf("reference %s not found", ref), scerr.ErrListError(errors))
+		if err == stow.ErrNotFound {
+			return scerr.NotFoundErrorWithCause(fmt.Sprintf("reference %s not found", ref), scerr.ErrListError(errors))
+		}
+
+		logrus.Warn(err)
+		return err
 	}
 	return nil
 }
@@ -511,6 +517,11 @@ func LoadNetwork(svc iaas.Service, ref string) (mn *Network, err error) {
 				if _, ok := innerErr.(scerr.ErrNotFound); ok {
 					return retry.AbortedError("no metadata found", innerErr)
 				}
+
+				if innerErr == stow.ErrNotFound {
+					return retry.AbortedError("no metadata found", innerErr)
+				}
+
 				return innerErr
 			}
 

@@ -36,7 +36,6 @@ import (
 	"github.com/CS-SI/SafeScale/lib/utils"
 	"github.com/CS-SI/SafeScale/lib/utils/serialize"
 	"github.com/sethvargo/go-password/password"
-	"github.com/sirupsen/logrus"
 )
 
 //
@@ -102,12 +101,12 @@ func loadRsaPrivateKey(keyFilePath string) (*rsa.PrivateKey, error) {
 }
 
 // Hash will compute and return a SHA-256 hash of the datas of the reader
-func Hash(reader io.Reader) string {
+func Hash(reader io.Reader) (string, error) {
 	h := sha256.New()
 	if _, err := io.Copy(h, reader); err != nil {
-		logrus.Fatal(err)
+		return "", err
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 //
@@ -175,9 +174,15 @@ func NewShard(bucket objectstorage.Bucket) (*Shard, error) {
 			break
 		}
 	}
+
+	bucketName, err := bucket.GetName()
+	if err != nil {
+		return nil, err
+	}
+
 	shard := Shard{
 		Name:       name,
-		BucketName: bucket.GetName(),
+		BucketName: bucketName,
 	}
 	return &shard, nil
 }
@@ -207,9 +212,14 @@ func (s *Shard) GenerateNonce(nonceSize int) ([]byte, error) {
 }
 
 // SetCheckSum will hash the file in the reader and store the result as a string
-func (s *Shard) SetCheckSum(reader io.Reader) string {
-	s.CheckSum = Hash(reader)
-	return s.CheckSum
+func (s *Shard) SetCheckSum(reader io.Reader) (string, error) {
+	checkSum, err := Hash(reader)
+	if err != nil {
+		return "", err
+	}
+	s.CheckSum = checkSum
+
+	return s.CheckSum, nil
 }
 
 // ToString return a string representation on a shard ready to be displayed
@@ -359,7 +369,7 @@ func (cg *ChunkGroup) ComputeShardCheckSum(shardNum int, reader io.Reader) (stri
 	if shardNum >= len(cg.Shards) {
 		return "", fmt.Errorf("there is only %d shards", len(cg.Shards))
 	}
-	return cg.Shards[shardNum].SetCheckSum(reader), nil
+	return cg.Shards[shardNum].SetCheckSum(reader)
 }
 
 // GenerateNonce generate a nonce for a given shard, return the nonce

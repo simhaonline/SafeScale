@@ -18,6 +18,7 @@ package metadata
 
 import (
 	"fmt"
+	"github.com/graymeta/stow"
 	"github.com/sirupsen/logrus"
 
 	"github.com/CS-SI/SafeScale/lib/server/iaas"
@@ -126,8 +127,13 @@ func (mh *Host) ReadByReference(ref string) (err error) {
 			errors = append(errors, err)
 		}
 	}
-	if err != nil {
-		return scerr.NotFoundErrorWithCause(fmt.Sprintf("reference %s not found", ref), scerr.ErrListError(errors))
+	if err != nil { // FIXME This is false, is not a 404
+		if err == stow.ErrNotFound {
+			return scerr.NotFoundErrorWithCause(fmt.Sprintf("reference %s not found", ref), scerr.ErrListError(errors))
+		}
+
+		logrus.Warn(err)
+		return err
 	}
 
 	return nil
@@ -359,6 +365,11 @@ func LoadHost(svc iaas.Service, ref string) (mh *Host, err error) {
 				if _, ok := innerErr.(scerr.ErrNotFound); ok {
 					return retry.AbortedError("no metadata found", innerErr)
 				}
+
+				if innerErr == stow.ErrNotFound {
+					return retry.AbortedError("no metadata found", innerErr)
+				}
+
 				return innerErr
 			}
 			return nil
