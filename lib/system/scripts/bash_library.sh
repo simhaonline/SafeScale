@@ -274,7 +274,7 @@ sfInstall() {
         debian|ubuntu)
             export DEBIAN_FRONTEND=noninteractive
             sfRetry 5m 5 "sfApt update"
-            sfApt install $1 -y || exit 194
+            sfRetry 3m 5 "sfApt install $1 -y" || exit 194
             which $1 || exit 194
             ;;
         centos|fedora|rhel|redhat)
