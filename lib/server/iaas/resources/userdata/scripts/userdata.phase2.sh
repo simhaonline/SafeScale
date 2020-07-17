@@ -53,8 +53,8 @@ set -x
 reset_fw() {
   case $LINUX_KIND in
   debian | ubuntu)
-    sfApt update &>/dev/null || return 1
-    sfApt install -q -y firewalld || return 1
+    sfRetry 3m 5 "sfApt update &>/dev/null" || return 1
+    sfRetry 3m 5 "sfApt install -q -y firewalld" || return 1
 
     systemctl stop ufw
     # systemctl start firewalld || return 1
@@ -67,11 +67,7 @@ reset_fw() {
     # firewalld may not be installed
     if ! systemctl is-active firewalld &>/dev/null; then
       if ! systemctl status firewalld &>/dev/null; then
-        if which dnf; then
-          dnf install -q -y firewalld || return 1
-        else
-          yum install -q -y firewalld || return 1
-        fi
+        sfRetry 3m 5 "sfYum install -q -y firewalld" || return 1
       fi
       # systemctl enable firewalld &>/dev/null
       # systemctl start firewalld &>/dev/null
@@ -270,11 +266,7 @@ ensure_curl_is_installed() {
     if [[ -n $(which curl) ]]; then
       return 0
     fi
-    if which dnf; then
-      dnf install -y -q curl &>/dev/null || return 1
-    else
-      yum install -y -q curl &>/dev/null || return 1
-    fi
+    sfRetry 3m 5 "sfYum install -y -q curl &>/dev/null" || return 1
     ;;
   *)
     echo "PROVISIONING_ERROR: Unsupported Linux distribution '$LINUX_KIND'!"
@@ -661,11 +653,7 @@ configure_network_redhat() {
   # Try installing network-scripts if available
   case $LINUX_KIND in
   redhat | rhel | centos | fedora)
-    if which dnf; then
-      dnf install -q -y network-scripts || true
-    else
-      yum install -q -y network-scripts || true
-    fi
+    sfRetry 3m 5 "sfYum install -q -y network-scripts" || true
     ;;
   *) ;;
   esac
@@ -673,7 +661,7 @@ configure_network_redhat() {
   # We don't want NetworkManager
   stop_svc NetworkManager &>/dev/null
   disable_svc NetworkManager &>/dev/null
-  yum remove -y NetworkManager &>/dev/null
+  sfYum remove -y NetworkManager &>/dev/null
 
   # Configure all network interfaces in dhcp
   for IF in $NICS; do
@@ -685,22 +673,22 @@ ONBOOT=yes
 NM_CONTROLLED=no
 EOF
       {{- if .DNSServers }}
-      i=1
-      {{- range .DNSServers }}
-      echo "DNS$i={{ . }}" >>/etc/sysconfig/network-scripts/ifcfg-${IF}
-      i=$((i + 1))
-      {{- end }}
+        i=1
+        {{- range .DNSServers }}
+        echo "DNS${i}={{ . }}" >>/etc/sysconfig/network-scripts/ifcfg-${IF}
+        i=$((i + 1))
+        {{- end }}
       {{- else }}
-      EXISTING_DNS=$(grep nameserver /etc/resolv.conf | awk '{print $2}')
-      if [[ -z ${EXISTING_DNS} ]]; then
-        echo "DNS1=1.1.1.1" >>/etc/sysconfig/network-scripts/ifcfg-${IF}
-      else
-        echo "DNS1=$EXISTING_DNS" >>/etc/sysconfig/network-scripts/ifcfg-${IF}
-      fi
+        EXISTING_DNS=$(grep nameserver /etc/resolv.conf | awk '{print $2}')
+        if [[ -z ${EXISTING_DNS} ]]; then
+          echo "DNS1=1.1.1.1" >>/etc/sysconfig/network-scripts/ifcfg-${IF}
+        else
+          echo "DNS1=$EXISTING_DNS" >>/etc/sysconfig/network-scripts/ifcfg-${IF}
+        fi
       {{- end }}
 
       {{- if .AddGateway }}
-      echo "GATEWAY={{ .DefaultRouteIP }}" >>/etc/sysconfig/network-scripts/ifcfg-${IF}
+        echo "GATEWAY={{ .DefaultRouteIP }}" >>/etc/sysconfig/network-scripts/ifcfg-${IF}
       {{- end}}
     fi
   done
@@ -853,11 +841,7 @@ install_keepalived() {
   # Try installing network-scripts if available
   case $LINUX_KIND in
   redhat | rhel | centos | fedora)
-    if which dnf; then
-      dnf install -q -y network-scripts || true
-    else
-      yum install -q -y network-scripts || true
-    fi
+    sfRetry 3m 5 "sfYum install -q -y network-scripts" || true
     ;;
   *) ;;
 
@@ -869,11 +853,7 @@ install_keepalived() {
     ;;
 
   redhat | rhel | centos | fedora)
-    if which dnf; then
-      dnf install -q -y keepalived || return 1
-    else
-      yum install -q -y keepalived || return 1
-    fi
+    sfRetry 3m 5 "sfYum install -q -y keepalived" || return 1
     ;;
   *)
     echo "Unsupported Linux distribution '$LINUX_KIND'!"
@@ -962,11 +942,7 @@ EOF
     if [[ kop -eq 0 ]]; then
       case $LINUX_KIND in
       redhat | rhel | centos | fedora)
-        if which dnf; then
-          dnf install -q -y network-scripts || return 1
-        else
-          yum install -q -y network-scripts || return 1
-        fi
+        sfRetry 3m 5 "sfYum install -q -y network-scripts" || return 1
         ;;
       *) ;;
 
@@ -1095,9 +1071,9 @@ install_drivers_nvidia() {
   ubuntu)
     sfFinishPreviousInstall
     add-apt-repository -y ppa:graphics-drivers &>/dev/null
-    sfApt update || fail 201
-    sfApt -y install nvidia-410 &>/dev/null || {
-      sfApt -y install nvidia-driver-410 &>/dev/null || fail 201
+    sfRetry 3m 5 "sfApt update" || fail 201
+    sfRetry 3m 5 "sfApt -y install nvidia-410 &>/dev/null" || {
+      sfRetry 3m 5 "sfApt -y install nvidia-driver-410 &>/dev/null" || fail 201
     }
     ;;
 
@@ -1106,11 +1082,11 @@ install_drivers_nvidia() {
       echo -e "blacklist nouveau\nblacklist lbm-nouveau\noptions nouveau modeset=0\nalias nouveau off\nalias lbm-nouveau off" >>/etc/modprobe.d/blacklist-nouveau.conf
       rmmod nouveau
     fi
-    sfWaitForApt && apt update &>/dev/null
-    sfWaitForApt && apt install -y dkms build-essential linux-headers-$(uname -r) gcc make &>/dev/null || fail 202
+    sfRetry 3m 5 "sfApt update &>/dev/null"
+    sfRetry 3m 5 "sfApt install -y dkms build-essential linux-headers-$(uname -r) gcc make &>/dev/null" || fail 202
     dpkg --add-architecture i386 &>/dev/null
-    sfWaitForApt && apt update &>/dev/null
-    sfWaitForApt && apt install -y lib32z1 lib32ncurses5 &>/dev/null || fail 203
+    sfRetry 3m 5 "sfApt update &>/dev/null"
+    sfRetry 3m 5 "sfApt install -y lib32z1 lib32ncurses5 &>/dev/null" || fail 203
     wget http://us.download.nvidia.com/XFree86/Linux-x86_64/410.78/NVIDIA-Linux-x86_64-410.78.run &>/dev/null || fail 204
     bash NVIDIA-Linux-x86_64-410.78.run -s || fail 205
     ;;
@@ -1121,10 +1097,10 @@ install_drivers_nvidia() {
       dracut --force
       rmmod nouveau
     fi
-    yum -y -q install kernel-devel.$(uname -i) kernel-headers.$(uname -i) gcc make &>/dev/null || fail 206
+    sfYum -y -q install kernel-devel.$(uname -i) kernel-headers.$(uname -i) gcc make &>/dev/null || fail 206
     wget http://us.download.nvidia.com/XFree86/Linux-x86_64/410.78/NVIDIA-Linux-x86_64-410.78.run || fail 207
     # if there is a version mismatch between kernel sources and running kernel, building the driver would require 2 reboots to get it done, right now this is unsupported
-    if [ $(uname -r) == $(yum list installed | grep kernel-headers | awk {'print $2'}).$(uname -i) ]; then
+    if [ $(uname -r) == $(sfYum list installed | grep kernel-headers | awk {'print $2'}).$(uname -i) ]; then
       bash NVIDIA-Linux-x86_64-410.78.run -s || fail 208
     fi
     rm -f NVIDIA-Linux-x86_64-410.78.run
@@ -1154,9 +1130,9 @@ EOF
     # # Force use of IPv4 addresses when installing packages
     # echo 'Acquire::ForceIPv4 "true";' >/etc/apt/apt.conf.d/99force-ipv4
 
-    sfApt update
+    sfRetry 3m 5 "sfApt update"
     # Force update of systemd, pciutils
-    sfApt install -q -y systemd pciutils || fail 210
+    sfRetry 3m 5 "sfApt install -q -y systemd pciutils" || fail 210
     # systemd, if updated, is restarted, so we may need to ensure again network connectivity
     ensure_network_connectivity
     check_network_reachable
@@ -1168,12 +1144,12 @@ EOF
     # # Force use of IPv4 addresses when installing packages
     # echo 'Acquire::ForceIPv4 "true";' >/etc/apt/apt.conf.d/99force-ipv4
 
-    sfApt update
+    sfRetry 3m 5 "sfApt update"
     # Force update of systemd, pciutils and netplan
     if dpkg --compare-versions $(sfGetFact "linux_version") ge 17.10; then
-      sfApt install -y systemd pciutils netplan.io || fail 211
+      sfRetry 3m 5 "sfApt install -y systemd pciutils netplan.io" || fail 211
     else
-      sfApt install -y systemd pciutils || fail 212
+      sfRetry 3m 5 "sfApt install -y systemd pciutils" || fail 212
     fi
     # systemd, if updated, is restarted, so we may need to ensure again network connectivity
     ensure_network_connectivity
@@ -1188,11 +1164,7 @@ EOF
     # echo "ip_resolve=4" >>/etc/yum.conf
 
     # Force update of systemd and pciutils
-    if which dnf; then
-      dnf install -q -y pciutils yum-utils || fail 213
-    else
-      yum install -q -y pciutils yum-utils || fail 213
-    fi
+    sfRetry 3m 5 "sfYum install -q -y pciutils yum-utils" || fail 213
 
     if [[ "{{.ProviderName}}" == "huaweicloud" ]]; then
       if [ "$(lscpu --all --parse=CORE,SOCKET | grep -Ev "^#" | sort -u | wc -l)" = "1" ]; then
@@ -1201,12 +1173,12 @@ EOF
         # systemd, if updated, is restarted, so we may need to ensure again network connectivity
         if which dnf; then
           op=-1
-          msg=$(dnf install -q -y systemd 2>&1) && op=$? || true
+          msg=$(sfRetry 3m 5 "sfYum install -q -y systemd 2>&1") && op=$? || true
           echo $msg | grep "Nothing to do" && return
           [ $op -ne 0 ] && sfFail 213
         else
           op=-1
-          msg=$(yum install -q -y systemd 2>&1) && op=$? || true
+          msg=$(sfRetry 3m 5 "sfYum install -q -y systemd 2>&1") && op=$? || true
           echo $msg | grep "Nothing to do" && return
           [ $op -ne 0 ] && sfFail 213
         fi
@@ -1216,12 +1188,12 @@ EOF
     else
       if which dnf; then
         op=-1
-        msg=$(dnf install -q -y systemd 2>&1) && op=$? || true
+        msg=$(sfRetry 3m 5 "sfYum install -q -y systemd 2>&1") && op=$? || true
         echo $msg | grep "Nothing to do" && return
         [ $op -ne 0 ] && sfFail 213
       else
         op=-1
-        msg=$(yum install -q -y systemd 2>&1) && op=$? || true
+        msg=$(sfRetry 3m 5 "sfYum install -q -y systemd 2>&1") && op=$? || true
         echo $msg | grep "Nothing to do" && return
         [ $op -ne 0 ] && sfFail 213
       fi
@@ -1239,17 +1211,13 @@ EOF
 install_packages() {
   case $LINUX_KIND in
   ubuntu | debian)
-    sfApt install -y -qq jq zip time zip &>/dev/null || fail 214
+    sfRetry 3m 5 "sfApt install -y -qq jq zip time zip &>/dev/null" || fail 214
     ;;
   redhat | rhel | centos)
-    if which dnf; then
-      dnf install --enablerepo=epel -y -q wget jq time zip &>/dev/null || fail 215
-    else
-      yum install --enablerepo=epel -y -q wget jq time zip &>/dev/null || fail 215
-    fi
+    sfRetry 3m 5 "sfYum install --enablerepo=epel -y -q wget jq time zip &>/dev/null" || fail 215
     ;;
   fedora)
-    dnf install -y -q wget jq time zip &>/dev/null || fail 215
+    sfRetry 3m 5 "sfYum install -y -q wget jq time zip &>/dev/null" || fail 215
     ;;
   *)
     echo "PROVISIONING_ERROR: Unsupported Linux distribution '$LINUX_KIND'!"
@@ -1272,7 +1240,7 @@ add_common_repos() {
       sfRetry 3m 5 "dnf install -y epel-release" || fail 217
       sfRetry 3m 5 "dnf makecache -y" || fail 218
       # ... but don't enable it by default
-      dnf config-manager --set-disabled epel &>/dev/null || true
+      sfYum config-manager --set-disabled epel &>/dev/null || true
     else
       # Install EPEL repo ...
       sfRetry 3m 5 "yum install -y epel-release" || fail 217
@@ -1333,12 +1301,12 @@ use_cgroups_v1_if_needed() {
   fedora)
     if [[ -n $(which lsb_release) ]]; then
       if [[ $(lsb_release -rs | cut -d. -f1) -gt 30 ]]; then
-        dnf install -y grubby || return 1
+        sfRetry 3m 5 "sfYum install -y grubby" || return 1
         grubby --update-kernel=ALL --args="systemd.unified_cgroup_hierarchy=0" || return 1
       fi
     else
       if [[ $(echo ${VERSION_ID}) -gt 30 ]]; then
-        dnf install -y grubby || return 1
+        sfRetry 3m 5 "sfYum install -y grubby" || return 1
         grubby --update-kernel=ALL --args="systemd.unified_cgroup_hierarchy=0" || return 1
       fi
     fi
@@ -1501,11 +1469,20 @@ function compatible_network() {
   # Try installing network-scripts if available
   case $LINUX_KIND in
   redhat | rhel | centos | fedora)
-    if which dnf; then
-      dnf install -q -y network-scripts || true
-    else
-      yum install -q -y network-scripts || true
-    fi
+    sfRetry 3m 5 "sfYum install -q -y network-scripts" || true
+    ;;
+  *) ;;
+  esac
+}
+
+function make_ready_for_ansible() {
+  # Try installing python3 if available, a failure is not considered an error
+  case $LINUX_KIND in
+  debian | ubuntu)
+    sfRetry 3m 5 "sfApt install -y python3" || true
+    ;;
+  redhat | rhel | centos | fedora)
+    sfRetry 3m 5 "sfYum install -q -y python3" || true
     ;;
   *) ;;
   esac
@@ -1563,6 +1540,8 @@ add_common_repos
 early_packages_update
 
 install_packages
+
+make_ready_for_ansible
 
 lspci | grep -i nvidia &>/dev/null && install_drivers_nvidia
 

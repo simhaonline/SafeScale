@@ -81,7 +81,6 @@ func (handler *NetworkHandler) Create(
 	sizing resources.SizingRequirements, theos string, gwname string,
 	failover bool, domain string, keeponfailure bool,
 ) (network *resources.Network, err error) {
-
 	if handler == nil {
 		return nil, scerr.InvalidInstanceError()
 	}

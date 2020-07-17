@@ -44,6 +44,8 @@ lib/utils:
 	@(cd utils && $(MAKE) all)
 
 sdk:
+	@$(RM) *.pb.go &>/dev/null || true
+	@$(RM) ./lib/safescale/*.pb.go &>/dev/null || true
 	@protoc -I. -I$(GOINCLUDEPATH)/src --go_out=plugins=grpc:. safescale.proto
 	@if [ -f ./lib/safescale/safescale.pb.go ]; then cp ./lib/safescale/safescale.pb.go .; fi;
 	@if [ ! -f ./safescale.pb.go ]; then echo "protobuf failed to create safescale.pb.go"; exit 1; fi;
