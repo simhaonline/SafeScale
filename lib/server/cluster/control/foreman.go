@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/davecgh/go-spew/spew"
 	"math"
 	"os"
 	"os/exec"
@@ -218,7 +219,7 @@ func (b *foreman) construct(task concurrency.Task, req Request) (err error) {
 		imageID = b.makers.DefaultImage(task, b)
 	}
 	if imageID == "" {
-		imageID = "Ubuntu 18.04"
+		imageID = "Ubuntu 18.04" // FIXME: Remove hardcoded default
 	}
 
 	// Determine Gateway sizing
@@ -670,13 +671,16 @@ func (b *foreman) construct(task concurrency.Task, req Request) (err error) {
 	return nil
 }
 
-// destruct destroys a cluster meticulously
-func (b *foreman) destruct(task concurrency.Task) (err error) {
+func (b *foreman) wipe(task concurrency.Task) (err error) {
+	// FIXME Implement wipe
 	cluster := b.cluster
 
 	tracer := concurrency.NewTracer(task, "", true).GoingIn()
 	defer tracer.OnExitTrace()()
 	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	logrus.Infof("[cluster %s] cluster info: %s", b.cluster.Name, spew.Sdump(b.cluster.Name))       // FIXME: Remove this
+	logrus.Infof("[cluster %s] cluster info: %s", b.cluster.Name, spew.Sdump(b.cluster.Complexity)) // FIXME: Remove this
 
 	// Updates metadata
 	err = cluster.UpdateMetadata(task, func() error {
@@ -686,20 +690,23 @@ func (b *foreman) destruct(task concurrency.Task) (err error) {
 		})
 	})
 	if err != nil {
-		return err
+		return scerr.Wrap(err, "")
 	}
 
 	// Unconfigure cluster
 	if b.makers.UnconfigureCluster != nil {
 		err = b.makers.UnconfigureCluster(task, b)
 		if err != nil {
-			return err
+			return scerr.Wrap(err, "")
 		}
 	}
 
 	deleteMasterFunc := func(t concurrency.Task, params concurrency.TaskParameters) (concurrency.TaskResult, error) {
-		funcErr := cluster.deleteMaster(t, params.(string))
-		return nil, funcErr
+		funcErr := cluster.wipeMaster(t, params.(string))
+		if funcErr != nil {
+			return nil, scerr.Wrap(funcErr, "")
+		}
+		return nil, nil
 	}
 
 	var cleaningErrors []error
@@ -712,12 +719,36 @@ func (b *foreman) destruct(task concurrency.Task) (err error) {
 			return err
 		}
 	}
+
+	logrus.Infof("[cluster %s] detected %d nodes ...", b.cluster.Name, nodeLength)
+
 	masterList := cluster.ListMasterIDs(task)
 	masterLength := len(masterList)
 	if masterLength > 0 {
 		if err := checkForAttachedVolumes(task, cluster, masterList, "master"); err != nil {
 			return err
 		}
+	}
+
+	logrus.Infof("[cluster %s] detected %d masters ...", b.cluster.Name, masterLength)
+
+	logrus.Infof("[cluster %s] deleting nodes ...", b.cluster.Name)
+
+	// If no nodes, generate the names, look for its id, add it to nodeList
+	if nodeLength == 0 {
+		num := 0
+		switch b.cluster.Complexity {
+		case complexity.Small:
+			num = 1
+		case complexity.Normal:
+			num = 3
+		case complexity.Large:
+			num = 5
+		}
+		for i := 1; i <= num; i++ {
+			nodeList = append(nodeList, fmt.Sprintf("%s-node-%d", b.cluster.Name, i))
+		}
+		nodeLength = len(nodeList)
 	}
 
 	// No volumes attached, delete nodes
@@ -728,7 +759,7 @@ func (b *foreman) destruct(task concurrency.Task) (err error) {
 			if err != nil {
 				return err
 			}
-			subtask, err = subtask.Start(b.taskDeleteNode, nodeList[i])
+			subtask, err = subtask.Start(b.taskWipeNode, nodeList[i])
 			if err != nil {
 				return err
 			}
@@ -737,9 +768,28 @@ func (b *foreman) destruct(task concurrency.Task) (err error) {
 		for _, s := range subtasks {
 			_, subErr := s.Wait()
 			if subErr != nil {
+				logrus.Warn(subErr)
 				cleaningErrors = append(cleaningErrors, subErr)
 			}
 		}
+	}
+
+	logrus.Infof("[cluster %s] deleting masters ...", b.cluster.Name)
+
+	if masterLength == 0 {
+		num := 0
+		switch b.cluster.Complexity {
+		case complexity.Small:
+			num = 1
+		case complexity.Normal:
+			num = 3
+		case complexity.Large:
+			num = 5
+		}
+		for i := 1; i <= num; i++ {
+			masterList = append(masterList, fmt.Sprintf("%s-master-%d", b.cluster.Name, i))
+		}
+		masterLength = len(masterList)
 	}
 
 	// delete the Masters
@@ -760,6 +810,7 @@ func (b *foreman) destruct(task concurrency.Task) (err error) {
 		for _, s := range subtasks {
 			_, subErr := s.Wait()
 			if subErr != nil {
+				logrus.Warn(subErr)
 				cleaningErrors = append(cleaningErrors, subErr)
 			}
 		}
@@ -785,6 +836,8 @@ func (b *foreman) destruct(task concurrency.Task) (err error) {
 		return scerr.ErrListError(cleaningErrors)
 	}
 
+	logrus.Infof("[cluster %s] deleting network ...", b.cluster.Name)
+
 	// Deletes the network
 	clientNetwork := client.New().Network
 	retryErr := retry.WhileUnsuccessfulDelay5SecondsTimeout(
@@ -797,6 +850,166 @@ func (b *foreman) destruct(task concurrency.Task) (err error) {
 		cleaningErrors = append(cleaningErrors, retryErr)
 		return scerr.ErrListError(cleaningErrors)
 	}
+
+	logrus.Infof("[cluster %s] deleting metadata ...", b.cluster.Name)
+
+	// Deletes the metadata
+	err = cluster.DeleteMetadata(task)
+	if err != nil {
+		cleaningErrors = append(cleaningErrors, err)
+		return scerr.ErrListError(cleaningErrors)
+	}
+
+	cluster.service = nil
+
+	return scerr.ErrListError(cleaningErrors)
+}
+
+// destruct destroys a cluster meticulously
+func (b *foreman) destruct(task concurrency.Task) (err error) {
+	cluster := b.cluster
+
+	tracer := concurrency.NewTracer(task, "", true).GoingIn()
+	defer tracer.OnExitTrace()()
+	defer scerr.OnExitLogError(tracer.TraceMessage(""), &err)()
+
+	// Updates metadata
+	err = cluster.UpdateMetadata(task, func() error {
+		return cluster.Properties.LockForWrite(property.StateV1).ThenUse(func(clonable data.Clonable) error {
+			clonable.(*clusterpropsv1.State).State = clusterstate.Removed
+			return nil
+		})
+	})
+	if err != nil {
+		return scerr.Wrap(err, "")
+	}
+
+	// Unconfigure cluster
+	if b.makers.UnconfigureCluster != nil {
+		err = b.makers.UnconfigureCluster(task, b)
+		if err != nil {
+			return scerr.Wrap(err, "")
+		}
+	}
+
+	deleteMasterFunc := func(t concurrency.Task, params concurrency.TaskParameters) (concurrency.TaskResult, error) {
+		funcErr := cluster.deleteMaster(t, params.(string))
+		if funcErr != nil {
+			return nil, scerr.Wrap(funcErr, "")
+		}
+		return nil, nil
+	}
+
+	var cleaningErrors []error
+
+	// check if nodes and/or masters have volumes attached (which would forbid the deletion)
+	nodeList := cluster.ListNodeIDs(task)
+	nodeLength := len(nodeList)
+	if nodeLength > 0 {
+		if err := checkForAttachedVolumes(task, cluster, nodeList, "node"); err != nil {
+			return err
+		}
+	}
+
+	logrus.Infof("[cluster %s] detected %d nodes ...", b.cluster.Name, nodeLength)
+
+	masterList := cluster.ListMasterIDs(task)
+	masterLength := len(masterList)
+	if masterLength > 0 {
+		if err := checkForAttachedVolumes(task, cluster, masterList, "master"); err != nil {
+			return err
+		}
+	}
+
+	logrus.Infof("[cluster %s] detected %d masters ...", b.cluster.Name, masterLength)
+
+	logrus.Infof("[cluster %s] deleting nodes ...", b.cluster.Name)
+
+	// No volumes attached, delete nodes
+	if nodeLength > 0 {
+		var subtasks []concurrency.Task
+		for i := 0; i < nodeLength; i++ {
+			subtask, err := task.New()
+			if err != nil {
+				return err
+			}
+			subtask, err = subtask.Start(b.taskDeleteNode, nodeList[i])
+			if err != nil {
+				return err
+			}
+			subtasks = append(subtasks, subtask)
+		}
+		for _, s := range subtasks {
+			_, subErr := s.Wait()
+			if subErr != nil {
+				logrus.Warn(subErr)
+				cleaningErrors = append(cleaningErrors, subErr)
+			}
+		}
+	}
+
+	logrus.Infof("[cluster %s] deleting masters ...", b.cluster.Name)
+
+	// delete the Masters
+	if masterLength > 0 {
+		var subtasks []concurrency.Task
+		for i := 0; i < masterLength; i++ {
+			subtask, err := task.New()
+			if err != nil {
+				return err
+			}
+
+			subtask, err = subtask.Start(deleteMasterFunc, masterList[i])
+			if err != nil {
+				return err
+			}
+			subtasks = append(subtasks, subtask)
+		}
+		for _, s := range subtasks {
+			_, subErr := s.Wait()
+			if subErr != nil {
+				logrus.Warn(subErr)
+				cleaningErrors = append(cleaningErrors, subErr)
+			}
+		}
+	}
+
+	// get access to metadata
+	cluster.RLock(task)
+	networkID := ""
+	if cluster.Properties.Lookup(property.NetworkV2) {
+		err = cluster.Properties.LockForRead(property.NetworkV2).ThenUse(func(clonable data.Clonable) error {
+			networkID = clonable.(*clusterpropsv2.Network).NetworkID
+			return nil
+		})
+	} else {
+		err = cluster.Properties.LockForRead(property.NetworkV1).ThenUse(func(clonable data.Clonable) error {
+			networkID = clonable.(*clusterpropsv1.Network).NetworkID
+			return nil
+		})
+	}
+	cluster.RUnlock(task)
+	if err != nil {
+		cleaningErrors = append(cleaningErrors, err)
+		return scerr.ErrListError(cleaningErrors)
+	}
+
+	logrus.Infof("[cluster %s] deleting network ...", b.cluster.Name)
+
+	// Deletes the network
+	clientNetwork := client.New().Network
+	retryErr := retry.WhileUnsuccessfulDelay5SecondsTimeout(
+		func() error {
+			return clientNetwork.Delete([]string{networkID}, temporal.GetExecutionTimeout())
+		},
+		temporal.GetHostTimeout(),
+	)
+	if retryErr != nil {
+		cleaningErrors = append(cleaningErrors, retryErr)
+		return scerr.ErrListError(cleaningErrors)
+	}
+
+	logrus.Infof("[cluster %s] deleting metadata ...", b.cluster.Name)
 
 	// Deletes the metadata
 	err = cluster.DeleteMetadata(task)
@@ -845,6 +1058,11 @@ func checkForAttachedVolumes(task concurrency.Task, cluster *Controller, list []
 
 func (b *foreman) taskDeleteNode(task concurrency.Task, params concurrency.TaskParameters) (concurrency.TaskResult, error) {
 	funcErr := b.cluster.DeleteSpecificNode(task, params.(string), "")
+	return nil, funcErr
+}
+
+func (b *foreman) taskWipeNode(task concurrency.Task, params concurrency.TaskParameters) (concurrency.TaskResult, error) {
+	funcErr := b.cluster.WipeSpecificNode(task, params.(string), "")
 	return nil, funcErr
 }
 
@@ -2562,7 +2780,7 @@ func (b *foreman) installDocker(task concurrency.Task, pbHost *pb.Host, hostLabe
 	return nil
 }
 
-// BuildHostname builds a unique hostname in the Cluster
+// buildHostname builds a unique hostname in the Cluster
 func (b *foreman) buildHostname(task concurrency.Task, core string, nodeType nodetype.Enum) (string, error) {
 	var (
 		index int

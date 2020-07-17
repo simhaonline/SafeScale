@@ -354,10 +354,10 @@ var clusterCreateCommand = cli.Command{
 			Usage: "Defines the CIDR of the network to use with cluster",
 		},
 		cli.StringFlag{
-			Name: "domain",
+			Name:  "domain",
 			Value: "cluster.local",
 			Usage: "Defines the domain name to use for the hostnames (default: cluster.local)",
-		},		
+		},
 		cli.StringSliceFlag{
 			Name: "disable",
 			Usage: `Allows to disable addition of default features (must be used several times to disable several features)
@@ -519,14 +519,14 @@ var clusterCreateCommand = cli.Command{
 				Name:                    clusterName,
 				Complexity:              clusterComplexity,
 				CIDR:                    cidr,
-				Domain: domain,
+				Domain:                  domain,
 				Flavor:                  clusterFlavor,
 				KeepOnFailure:           keep,
 				GatewaysDef:             gatewaysDef,
 				MastersDef:              mastersDef,
 				NodesDef:                nodesDef,
 				DisabledDefaultFeatures: disableFeatures,
-				},
+			},
 		)
 		if err != nil {
 			if clusterInstance != nil {
@@ -596,7 +596,11 @@ var clusterDeleteCommand = cli.Command{
 			return clitools.SuccessResponse("Aborted")
 		}
 		if force {
-			logrus.Println("'-f,--force' does nothing yet")
+			err = clusterInstance.Wipe(concurrency.RootTask())
+			if err != nil {
+				return clitools.FailureResponse(clitools.ExitOnRPC(err.Error()))
+			}
+			return clitools.SuccessResponse(nil)
 		}
 
 		err = clusterInstance.Delete(concurrency.RootTask())
@@ -1008,9 +1012,9 @@ var clusterKubectlCommand = cli.Command{
 
 						// Adds the file to download
 						rfi := RemoteFileItem{
-							Local:  localFile,
-							Remote: fmt.Sprintf("%s/kubectl_%d.%s.%d.tmp", utils.TempFolder, idx+1, clientID, time.Now().UnixNano()),
-							RemoteOwner: "cladm",
+							Local:        localFile,
+							Remote:       fmt.Sprintf("%s/kubectl_%d.%s.%d.tmp", utils.TempFolder, idx+1, clientID, time.Now().UnixNano()),
+							RemoteOwner:  "cladm",
 							RemoteRights: "u+rwx,go-rwx",
 						}
 						valuesOnRemote.Add(&rfi)
@@ -1140,9 +1144,9 @@ var clusterHelmCommand = cli.Command{
 
 						if localFile != "-" {
 							rfc := RemoteFileItem{
-								Local:  localFile,
-								Remote: fmt.Sprintf("%s/helm_values_%d.%s.%d.tmp", utils.TempFolder, idx+1, clientID, time.Now().UnixNano()),
-								RemoteOwner: "cladm",
+								Local:        localFile,
+								Remote:       fmt.Sprintf("%s/helm_values_%d.%s.%d.tmp", utils.TempFolder, idx+1, clientID, time.Now().UnixNano()),
+								RemoteOwner:  "cladm",
 								RemoteRights: "u+rwx,go-rwx",
 							}
 							valuesOnRemote.Add(&rfc)
@@ -1596,6 +1600,8 @@ var clusterNodeDeleteCommand = cli.Command{
 		if force {
 			logrus.Println("'-f,--force' does nothing yet")
 		}
+
+		// FIXME No more does nothing yet
 
 		return clitools.FailureResponse(clitools.ExitOnErrorWithMessage(exitcode.NotImplemented, "Not yet implemented"))
 	},

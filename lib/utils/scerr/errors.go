@@ -166,13 +166,13 @@ func Wrap(cause error, message string) ErrCore {
 	return NewErrCore(message, cause, nil, fileName, fileLine)
 }
 
-func ErrorfWithCause(message string, cause error) ErrCore {
+func ErrorfWithoutCause(message string) ErrCore {
 	fileName := GetCallerFileName()
 	ind := strings.Index(fileName, "/SafeScale") + len("/SafeScale")
 	fileName = fileName[ind:]
 
 	fileLine := GetCallerFileLine()
-	return NewErrCore(message, cause, nil, fileName, fileLine)
+	return NewErrCore(message, nil, nil, fileName, fileLine)
 }
 
 func Errorf(message string, cause error) ErrCore {

@@ -129,7 +129,7 @@ func (s *VolumeListener) Create(ctx context.Context, in *pb.VolumeDefinition) (_
 		return nil, status.Errorf(codes.Internal, getUserMessage(err))
 	}
 	if vol == nil {
-		return nil, status.Errorf(codes.Internal, "operation failure with nil result and nil error")
+		return nil, status.Errorf(codes.Internal, "volume operation failure with nil result and nil error")
 	}
 
 	log.Infof("Volume '%s' created", name)

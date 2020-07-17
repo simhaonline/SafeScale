@@ -72,3 +72,5 @@ clean:
 	@($(RM) safescale_pb2.py || true)
 	@(cd server && $(MAKE) $@)
 	@(cd system && $(MAKE) $@)
+	@$(RM) *.pb.go || true
+	@$(RM) ./lib/safescale/*.pb.go &>/dev/null || true

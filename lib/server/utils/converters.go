@@ -58,7 +58,7 @@ func ToSystemSSHConfig(from *pb.SshConfig) (gw *system.SSHConfig, err error) {
 	}
 	if from.Host == "" {
 		logrus.Error(scerr.DecorateWithCallTrace("invalid parameter content:", "from.Host", "cannot be empty string"))
-		return nil, scerr.InvalidParameterError("from.Host", "cannot be nil")
+		return nil, scerr.InvalidParameterError("from.Host", "cannot be empty")
 	}
 	if from.Gateway != nil {
 		gw, err = ToSystemSSHConfig(from.Gateway)

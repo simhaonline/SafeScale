@@ -108,12 +108,13 @@ func (s *NetworkListener) Create(ctx context.Context, in *pb.NetworkDefinition) 
 		gwName,
 		in.FailOver,
 		in.Domain,
+		in.KeepOnFailure,
 	)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, getUserMessage(err))
 	}
 	if network == nil {
-		return nil, status.Errorf(codes.Internal, "operation failure with nil result and nil error")
+		return nil, status.Errorf(codes.Internal, "network operation failure with nil result and nil error")
 	}
 
 	log.Infof("Network '%s' successfully created.", networkName)

@@ -567,7 +567,7 @@ func (s *Stack) deleteSubnet(id string) error {
 			return scerr.Errorf(fmt.Sprintf("DELETE command failed with status %d", r.StatusCode), nil)
 		},
 		retry.PrevailDone(retry.Unsuccessful(), retry.Timeout(temporal.GetHostTimeout())),
-		retry.Constant(temporal.GetDefaultDelay()),
+		retry.BackoffSelector()(temporal.GetDefaultDelay()),
 		nil, nil,
 		func(t retry.Try, v verdict.Enum) {
 			if t.Err != nil {
@@ -633,7 +633,7 @@ func (s *Stack) CreateGateway(req resources.GatewayRequest, sizing *resources.Si
 		return nil, nil, scerr.InvalidParameterError("req.Network", "cannot be nil")
 	}
 
-	gwname := strings.Split(req.Name, ".")[0]   // req.Name may contain a FQDN...
+	gwname := strings.Split(req.Name, ".")[0] // req.Name may contain a FQDN...
 	if gwname == "" {
 		gwname = "gw-" + req.Network.Name
 	}

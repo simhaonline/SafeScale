@@ -18,7 +18,6 @@ package objectstorage
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"github.com/CS-SI/SafeScale/lib/utils/scerr"
 	"io"
@@ -384,7 +383,7 @@ func (o *object) GetSize() (int64, error) {
 			return size, nil
 		}
 	}
-	return -1, errors.New("metadata item without size")
+	return -1, scerr.Errorf("metadata item without size", nil)
 }
 
 // GetETag returns the value of the ETag (+/- md5sum of the content...)
@@ -399,7 +398,7 @@ func (o *object) GetETag() (string, error) {
 			return etag, nil
 		}
 	}
-	return "", errors.New("metadata item without etag")
+	return "", scerr.Errorf("metadata item without etag", nil)
 }
 
 // GetID ...
@@ -412,5 +411,5 @@ func (o *object) GetID() (string, error) {
 		return o.item.ID(), nil
 	}
 
-	return "", errors.New("metadata item without id")
+	return "", scerr.Errorf("metadata item without id", nil)
 }

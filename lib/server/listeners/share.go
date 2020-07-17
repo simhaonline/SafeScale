@@ -82,7 +82,7 @@ func (s *ShareListener) Create(ctx context.Context, in *pb.ShareDefinition) (sd 
 		return nil, status.Errorf(codes.Internal, tbr.Message())
 	}
 	if share == nil {
-		return nil, status.Errorf(codes.Internal, "operation failure with nil result and nil error")
+		return nil, status.Errorf(codes.Internal, "share operation failure with nil result and nil error")
 	}
 
 	return srvutils.ToPBShare(in.GetName(), share)

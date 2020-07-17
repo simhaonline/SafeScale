@@ -264,6 +264,8 @@ func unconfigureCluster(task concurrency.Task, foreman control.Foreman) error {
 		}
 		return nil
 	})
+
+	logrus.Println(fmt.Sprintf("[cluster %s] finishing cluster metadata lock...", clusterName))
 	if err != nil {
 		return err
 	}

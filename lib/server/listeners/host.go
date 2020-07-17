@@ -275,7 +275,7 @@ func (s *HostListener) Create(ctx context.Context, in *pb.HostDefinition) (h *pb
 		return nil, status.Errorf(codes.Internal, getUserMessage(err))
 	}
 	if host == nil {
-		return nil, status.Errorf(codes.Internal, "operation failure with nil result and nil error")
+		return nil, status.Errorf(codes.Internal, "host operation failure with nil result and nil error")
 	}
 
 	log.Infof("Host '%s' created", name)
