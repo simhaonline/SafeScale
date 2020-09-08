@@ -4,23 +4,16 @@ GO?=go
 .PHONY:	clean vet
 
 generate: clean
-#all: generate
-#	@(cd cloudferro && $(MAKE) $(@))
-#	@(cd flexibleengine && $(MAKE) $(@))
-#	@(cd openstack && $(MAKE) $(@))
-#	@(cd opentelekom && $(MAKE) $(@))
-#	@(cd ovh && $(MAKE) $(@))
-#	@(cd local && $(MAKE) $(@))
-#	@(cd gcp && $(MAKE) $(@))
-#
-#generate: clean
-#	@(cd cloudferro && $(MAKE) $(@))
-#	@(cd flexibleengine && $(MAKE) $(@))
-#	@(cd openstack && $(MAKE) $(@))
-#	@(cd opentelekom && $(MAKE) $(@))
-#	@(cd ovh && $(MAKE) $(@))
-#	@(cd local && $(MAKE) $(@))
-#	@(cd gcp && $(MAKE) $(@))
+
+all: generate
+	@(cd cloudferro && $(MAKE) $(@))
+	@(cd flexibleengine && $(MAKE) $(@))
+	@(cd openstack && $(MAKE) $(@))
+	@(cd opentelekom && $(MAKE) $(@))
+	@(cd ovh && $(MAKE) $(@))
+	@(cd local && $(MAKE) $(@))
+	@(cd gcp && $(MAKE) $(@))
+	@(cd ebrc && $(MAKE) $(@))
 
 vet:
 	@$(GO) vet ./...

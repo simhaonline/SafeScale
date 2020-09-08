@@ -97,7 +97,7 @@ getdevdeps: begin ground
 		printf "%b" "$(OK_COLOR)$(INFO_STRING) Downloading stringer...\n" && $(GO) get -u  $(STRINGER) &>/dev/null || true; \
 	fi
 	@which golangci-lint > /dev/null; if [ $$? -ne 0 ]; then \
-		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $($(GO) env GOPATH)/bin v1.26.0 || true; \
+		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(GOPATH)/bin v1.26.0 || true; \
 	fi
 
 ensure: common
